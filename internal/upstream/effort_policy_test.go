@@ -213,7 +213,7 @@ func TestEffortPolicyMatrix(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			out, _ := PrepareBodyOptWithEffortPolicy([]byte(c.body), false, efforts, nil, nil, c.policy)
+			out, _ := PrepareBodyOptWithEffortPolicy([]byte(c.body), false, efforts, nil, nil, "", c.policy)
 			key, val, present := effortOf(t, out)
 			if c.wantNoEff {
 				if present {
@@ -242,7 +242,7 @@ func TestEffortPolicyNilKeepsLegacyPipeline(t *testing.T) {
 	body := []byte(`{"model":"demo","reasoning_effort":"low","messages":[]}`)
 	efforts := map[string][]string{"demo": {"low", "high"}}
 	legacy := PrepareBodyOptWithEffortsAndDefault(body, false, efforts, nil)
-	withNil, _ := PrepareBodyOptWithEffortPolicy(body, false, efforts, nil, nil, nil)
+	withNil, _ := PrepareBodyOptWithEffortPolicy(body, false, efforts, nil, nil, "", nil)
 	if string(legacy) != string(withNil) {
 		t.Errorf("policy=nil 应与旧管线完全一致\nlegacy=%s\nnew=%s", legacy, withNil)
 	}
@@ -266,5 +266,74 @@ func TestClientSetEffortPolicy(t *testing.T) {
 	c.SetEffortPolicy(nil)
 	if c.EffortPolicySnapshot() != nil {
 		t.Fatalf("SetEffortPolicy(nil) 应清空")
+	}
+}
+
+// TestEffortPolicyModelDefaults 每模型覆盖解析：realm 键优先、裸名兜底、
+// inherit 回落全局；快照深拷贝，外部改 map 不影响已存策略。
+func TestEffortPolicyModelDefaults(t *testing.T) {
+	p := &EffortPolicy{
+		Enabled: true, DefaultEffort: "max",
+		ModelDefaults: map[string]string{
+			"cn:glm-5.3": "high",
+			"kimi-k3":    "low",
+			"global:x":   "inherit",
+		},
+	}
+	if got := p.DefaultEffortFor("cn", "glm-5.3"); got != "high" {
+		t.Errorf("cn:glm-5.3=%q want high", got)
+	}
+	if got := p.DefaultEffortFor("global", "glm-5.3"); got != "max" {
+		t.Errorf("global 无覆盖应回落 max, got %q", got)
+	}
+	if got := p.DefaultEffortFor("cn", "kimi-k3"); got != "low" {
+		t.Errorf("裸名兜底=%q want low", got)
+	}
+	if got := p.DefaultEffortFor("global", "x"); got != "max" {
+		t.Errorf("inherit 应回落 max, got %q", got)
+	}
+	if got := p.DefaultEffortFor("", "glm-5.3"); got != "high" {
+		t.Errorf("空 realm 等价 cn, got %q", got)
+	}
+	if got := p.ModelDefault("cn", "glm-5.3"); got != "high" {
+		t.Errorf("ModelDefault=%q want high", got)
+	}
+	if got := p.ModelDefault("cn", "none"); got != "" {
+		t.Errorf("未覆盖 ModelDefault=%q want 空", got)
+	}
+
+	c := New()
+	c.SetEffortPolicy(p)
+	p.ModelDefaults["cn:glm-5.3"] = "low" // 改原 map 不应污染快照
+	if got := c.EffortPolicySnapshot().DefaultEffortFor("cn", "glm-5.3"); got != "high" {
+		t.Errorf("快照被外部 map 污染: %q", got)
+	}
+}
+
+// TestPrepareBodyOptPerModelRealm 出站补档读 realm 覆盖：同一模型两域可不同，
+// 目标是模型声明档位，补出的值必在 supported 内。
+func TestPrepareBodyOptPerModelRealm(t *testing.T) {
+	p := &EffortPolicy{
+		Enabled: true, DefaultEffort: "max", ClientPriority: true, OverrideScope: "level",
+		ModelDefaults: map[string]string{"cn:demo": "low"},
+	}
+	efforts := map[string][]string{"demo": {"low", "medium", "high"}}
+	body := []byte(`{"model":"demo","messages":[]}`)
+	out, _ := PrepareBodyOptWithEffortPolicy(body, false, efforts, nil, nil, "cn", p)
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["reasoning_effort"] != "low" {
+		t.Errorf("cn 覆盖档=%v want low (out=%s)", got["reasoning_effort"], out)
+	}
+	// 同模型 global 域没有覆盖 → 全局 max → 声明最高档 high。
+	out, _ = PrepareBodyOptWithEffortPolicy(body, false, efforts, nil, nil, "global", p)
+	got = map[string]any{}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["reasoning_effort"] != "high" {
+		t.Errorf("global 默认档=%v want high (out=%s)", got["reasoning_effort"], out)
 	}
 }

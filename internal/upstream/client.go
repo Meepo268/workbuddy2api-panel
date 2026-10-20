@@ -974,7 +974,7 @@ func (c *Client) prepareBody(body []byte, realm, uid, conversationID string) ([]
 	// prompt_cache_key 注入（P0 费用优化，费用降 ~17×）：按账号隔离的稳定缓存键，
 	// 让同一客户端对同一账号的连续请求命中上游前缀缓存。与 body 归一化共用
 	// prepareBodyOpt 的同一次 map 解析，不再二次 Unmarshal/Marshal。
-	body, effort := prepareBodyOpt(body, c.SanitizeFingerprints.Load(), efforts, defs, maxOut, uid, conversationID, true, c.EffortPolicySnapshot())
+	body, effort := prepareBodyOpt(body, c.SanitizeFingerprints.Load(), efforts, defs, maxOut, uid, conversationID, true, realmKey(realm), c.EffortPolicySnapshot())
 	return body, effort
 }
 
@@ -985,6 +985,7 @@ func (c *Client) SetEffortPolicy(p *EffortPolicy) {
 		return
 	}
 	cp := p.normalized()
+	cp.ModelDefaults = copyModelDefaults(cp.ModelDefaults)
 	c.effortPolicy.Store(&cp)
 }
 
@@ -996,6 +997,7 @@ func (c *Client) EffortPolicySnapshot() *EffortPolicy {
 		return nil
 	}
 	cp := *p
+	cp.ModelDefaults = copyModelDefaults(cp.ModelDefaults)
 	return &cp
 }
 

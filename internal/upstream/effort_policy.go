@@ -22,6 +22,10 @@ type EffortPolicy struct {
 	ClientPriority bool
 	// OverrideScope 网关优先时的覆盖范围：level（只覆盖档位）或 all（档位+开关）。
 	OverrideScope string
+	// ModelDefaults 每模型覆盖默认档：键 "cn:model"/"global:model"，裸模型名也接受；
+	// 值 "inherit"/空 = 跟随 DefaultEffort，具体档位 = 该模型专属默认档。
+	// 由面板「模型能力」页行内编辑写入 thinking.model_defaults，保存即热生效。
+	ModelDefaults map[string]string
 }
 
 const (
@@ -47,6 +51,52 @@ func (p EffortPolicy) normalized() EffortPolicy {
 // Normalized 返回归一化后的策略副本（空默认档 → max，未知覆盖范围 → level）。
 // 展示侧（/v1/models 声明）与出站侧共用同一份归一化结果，避免两处口径漂移。
 func (p EffortPolicy) Normalized() EffortPolicy { return p.normalized() }
+
+// DefaultEffortFor 返回某模型实际使用的网关默认档：先查每模型覆盖
+// （"realm:model" 优先，裸模型名兜底），未覆盖或标记 inherit 时回落到全局
+// DefaultEffort。返回值尚未按模型声明档位解析，调用方仍需 ResolveGatewayEffort。
+func (p EffortPolicy) DefaultEffortFor(realm, model string) string {
+	p = p.normalized()
+	if v := p.ModelDefault(realm, model); v != "" {
+		return v
+	}
+	return p.DefaultEffort
+}
+
+// ModelDefault 返回该模型的显式覆盖档；未覆盖或标记 inherit 时返回 ""。
+// 键按 "realm:model"（realm 空等价 cn）优先、裸模型名兜底。
+func (p EffortPolicy) ModelDefault(realm, model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" || len(p.ModelDefaults) == 0 {
+		return ""
+	}
+	key := realmKey(realm) + ":" + model
+	if v, ok := p.ModelDefaults[key]; ok {
+		return normalizeModelDefault(v)
+	}
+	return normalizeModelDefault(p.ModelDefaults[model])
+}
+
+// normalizeModelDefault 归一化覆盖值：inherit/空 表示未覆盖。
+func normalizeModelDefault(v string) string {
+	s := strings.ToLower(strings.TrimSpace(v))
+	if s == "" || s == "inherit" {
+		return ""
+	}
+	return s
+}
+
+// copyModelDefaults 深拷贝每模型覆盖表（快照与配置解耦，避免共享 map 被并发改写）。
+func copyModelDefaults(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
 
 // effortField 返回请求体里已有的档位字段名与字符串值。
 // snake_case 优先于 camelCase（与 normalizeReasoningEffort 的读取顺序一致）；
@@ -103,7 +153,7 @@ func honorClose(obj map[string]any, model string) {
 //
 // 只处理模型确实声明了档位（efforts[model] 非空）的请求——没有声明就绝不猜档位，
 // 也没有可写入的合法值。
-func applyEffortPolicy(obj map[string]any, model string, efforts map[string][]string, policy *EffortPolicy) {
+func applyEffortPolicy(obj map[string]any, model string, efforts map[string][]string, realm string, policy *EffortPolicy) {
 	if policy == nil || !policy.Enabled || len(efforts) == 0 {
 		return
 	}
@@ -112,7 +162,7 @@ func applyEffortPolicy(obj map[string]any, model string, efforts map[string][]st
 		return
 	}
 	p := policy.normalized()
-	target, ok := ResolveGatewayEffort(p.DefaultEffort, supported)
+	target, ok := ResolveGatewayEffort(p.DefaultEffortFor(realm, model), supported)
 	if !ok {
 		return
 	}
