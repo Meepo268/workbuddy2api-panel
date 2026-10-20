@@ -207,7 +207,7 @@ type Config struct {
 		// ModelDefaults 每模型覆盖默认档：键 "cn:模型ID"/"global:模型ID"（裸模型名也接受），
 		// 值 = 具体档位或 "inherit"（跟随上面的全局 DefaultEffort）。面板「模型能力」页
 		// 行内编辑写入，保存即热生效；未列出的模型一律走全局默认档。
-		ModelDefaults map[string]string `json:"model_defaults"`
+		ModelDefaults map[string]string `json:"model_defaults,omitempty"`
 	} `json:"thinking"`
 
 	Prompt struct {

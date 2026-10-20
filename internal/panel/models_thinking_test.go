@@ -54,7 +54,7 @@ func TestModelThinkingSetAndClear(t *testing.T) {
 		t.Errorf("其余 thinking 字段应保留，got %v", thinking)
 	}
 
-	// inherit → 删除该键；清空后整个 model_defaults 键消失。
+	// inherit → 删键；清空后整体写 null，让 SaveConfig 深合并时删掉旧键。
 	w = postModelThinking(t, p, `{"id":"cn:demo","effort":"inherit"}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
@@ -62,8 +62,8 @@ func TestModelThinkingSetAndClear(t *testing.T) {
 	doc = map[string]any{}
 	_ = json.Unmarshal([]byte(saved), &doc)
 	thinking, _ = doc["thinking"].(map[string]any)
-	if _, has := thinking["model_defaults"]; has {
-		t.Errorf("清空后应删除 model_defaults 键，got %s", saved)
+	if v, has := thinking["model_defaults"]; !has || v != nil {
+		t.Errorf("清空后 model_defaults 应为 null（深合并删除），got has=%v v=%v (%s)", has, v, saved)
 	}
 }
 

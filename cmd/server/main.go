@@ -776,6 +776,12 @@ func restartRequiredFields(current, next *Config) []string {
 // 未提交的兄弟键（含用户手写的未知键）保持原样。
 func mergeConfigMaps(cur, incoming map[string]any) map[string]any {
 	for k, v := range incoming {
+		// null = 显式删除该键：面板「清除每模型覆盖」这类操作必须能穿透深合并，
+		// 否则旧值会被合并回来（空 map 做不到这一点）。
+		if v == nil {
+			delete(cur, k)
+			continue
+		}
 		if inMap, ok := v.(map[string]any); ok {
 			if curMap, ok := cur[k].(map[string]any); ok {
 				cur[k] = mergeConfigMaps(curMap, inMap)

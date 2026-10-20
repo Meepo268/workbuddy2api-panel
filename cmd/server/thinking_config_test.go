@@ -88,18 +88,17 @@ func TestThinkingEnvOverride(t *testing.T) {
 }
 
 func TestThinkingModelDefaultsNormalized(t *testing.T) {
-	c, err := ParseConfig([]byte(`{"thinking":{"model_defaults":{" cn:demo ":" HIGH ","cn:blank":"inherit","":"max"}}}`))
+	c, err := ParseConfig([]byte(`{"thinking":{"model_defaults":{" cn:demo ":" HIGH ","cn:blank":"inherit","cn:empty":"","":"max"}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := c.Thinking.ModelDefaults["cn:demo"]; got != "high" {
 		t.Errorf("cn:demo=%q want high（键值去空格+小写）", got)
 	}
-	if _, has := c.Thinking.ModelDefaults["cn:blank"]; has {
-		t.Errorf("inherit 应归一化为未覆盖（删除），got %v", c.Thinking.ModelDefaults)
-	}
-	if _, has := c.Thinking.ModelDefaults[""]; has {
-		t.Errorf("空键应删除，got %v", c.Thinking.ModelDefaults)
+	for _, k := range []string{"cn:blank", "cn:empty", ""} {
+		if _, has := c.Thinking.ModelDefaults[k]; has {
+			t.Errorf("%q 应归一化为未覆盖（删除），got %v", k, c.Thinking.ModelDefaults)
+		}
 	}
 }
 
@@ -138,6 +137,32 @@ func TestThinkingHotReloadModelDefaults(t *testing.T) {
 	}
 	if got := snap.DefaultEffortFor("cn", "demo"); got != "xhigh" {
 		t.Errorf("DefaultEffortFor(cn,demo)=%q want xhigh", got)
+	}
+}
+
+// TestMergeConfigMapsNullDeletes null 表示显式删除：面板清除每模型覆盖必须穿透
+// 深合并，空 map 做不到（旧值会被合并回来）。
+func TestMergeConfigMapsNullDeletes(t *testing.T) {
+	cur := map[string]any{"thinking": map[string]any{
+		"model_defaults": map[string]any{"cn:a": "low", "cn:b": "high"},
+	}}
+	got := mergeConfigMaps(cur, map[string]any{"thinking": map[string]any{"model_defaults": nil}})
+	th, _ := got["thinking"].(map[string]any)
+	if _, has := th["model_defaults"]; has {
+		t.Fatalf("null 应删除 model_defaults，got %v", th)
+	}
+
+	// 非 null 时仍按深合并：只改一个键，其它键保留。
+	cur = map[string]any{"thinking": map[string]any{
+		"model_defaults": map[string]any{"cn:a": "low", "cn:b": "high"},
+	}}
+	got = mergeConfigMaps(cur, map[string]any{"thinking": map[string]any{
+		"model_defaults": map[string]any{"cn:a": "max"},
+	}})
+	th, _ = got["thinking"].(map[string]any)
+	defaults, _ := th["model_defaults"].(map[string]any)
+	if defaults["cn:a"] != "max" || defaults["cn:b"] != "high" {
+		t.Fatalf("深合并结果=%v", defaults)
 	}
 }
 

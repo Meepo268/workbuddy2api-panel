@@ -69,13 +69,15 @@ func (p *Panel) modelThinking(w http.ResponseWriter, r *http.Request) {
 		defaults = map[string]any{}
 	}
 	key := realm + ":" + bare
+	// 清除覆盖时从 map 里删键；清空后整体写 null —— SaveConfig 与磁盘配置深合并，
+	// 只有 null 才会让 mergeConfigMaps 删掉旧键（空 map 会被旧值合并回来）。
 	if effort == "" || effort == "inherit" {
 		delete(defaults, key)
 	} else {
 		defaults[key] = effort
 	}
 	if len(defaults) == 0 {
-		delete(thinking, "model_defaults")
+		thinking["model_defaults"] = nil
 	} else {
 		thinking["model_defaults"] = defaults
 	}
