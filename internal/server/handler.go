@@ -464,14 +464,11 @@ func (h *Handler) modelList() []map[string]any {
 		}
 		// 上游模型对象全字段透出（name/描述/标签/倍率/能力旗标等，空值省略）。
 		entry = applyModelInfoFields(entry, mi)
-		// effort 能力透出——远端 supportedEfforts 权威，缺失落到 CN 静态兜底表
-		// （客户端可发现档位，不再盲传）。无档位 → 省略字段。
-		if efforts, def := upstream.EffortListing("cn", mi.ID, mi.Efforts, mi.DefaultEffort); efforts != nil {
-			entry["reasoning_supported_efforts"] = efforts
-			if def != "" {
-				entry["reasoning_default_effort"] = def
-			}
-		}
+		// 能力声明：推理档位（canonical + reasoning_options）与跨客户端通用别名
+		// （context_window / max_input_tokens / max_completion_tokens / 模态）。
+		// 客户端添加模型时据此自动填入上下文、输出上限与思考档位，不再靠猜。
+		applyCapabilityAliases(entry, mi)
+		h.applyReasoningListing(entry, "cn", mi, mi.Efforts, mi.DefaultEffort)
 		out = append(out, entry)
 	}
 	// global 模型名单：仅 GlobalEnabled=true 时列出（逃生门）。
@@ -500,7 +497,11 @@ func (h *Handler) modelList() []map[string]any {
 			}
 			// context_length / max_output_tokens 四级查找（与 CN 动态分支同口径）。
 			var remoteCtx, remoteOut int64
-			if mi, ok := globalInfos[id]; ok {
+			mi := globalInfos[id]
+			if mi.ID == "" {
+				mi.ID = id // 探测对象缺条目时仍按裸 ID 查静态档位表
+			}
+			if _, ok := globalInfos[id]; ok {
 				entry = applyModelInfoFields(entry, mi)
 				remoteCtx, remoteOut = mi.ContextWindow, mi.MaxTokens
 			}
@@ -508,12 +509,9 @@ func (h *Handler) modelList() []map[string]any {
 			if mo, ok := upstream.MaxOutputTokensListingV4(id, remoteOut, h.cfg.Upstream.HTTP); ok {
 				entry["max_output_tokens"] = mo
 			}
-			if efforts, def := upstream.EffortListing("global", id, globalEfforts[id], globalDefaults[id]); efforts != nil {
-				entry["reasoning_supported_efforts"] = efforts
-				if def != "" {
-					entry["reasoning_default_effort"] = def
-				}
-			}
+			// 能力声明与 CN 分支同口径（global 静态表 + 探测桶）。
+			applyCapabilityAliases(entry, mi)
+			h.applyReasoningListing(entry, "global", mi, globalEfforts[id], globalDefaults[id])
 			out = append(out, entry)
 		}
 	}
