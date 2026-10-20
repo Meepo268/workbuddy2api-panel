@@ -889,17 +889,60 @@ function mdRowHtml(m, pr) {
   const tip = m.description ? ' title="' + esc(m.description) + '"' : '';
   return '<tr><td class="mark" aria-hidden="true"><i></i></td><td class="who"' + tip + '><div class="nm"><span class="mid">' + esc(m.id) + '</span>' + mdAvailabilityTag(m) + '</div><div class="id">' + esc(m.name || '') + '</div>' + capHtml + '</td>' +
     '<td class="num">' + rateCell(m) + '</td>' +
-    '<td>' + (m.default_effort && !m.image_generation ? '<span class="tag ok">' + esc(m.default_effort) + '</span>' : '<span style="color:var(--ink-3)">—</span>') + '</td>' +
+    '<td>' + (m.upstream_default_effort && !m.image_generation ? '<span class="tag mute">' + esc(m.upstream_default_effort) + '</span>' : '<span style="color:var(--ink-3)">—</span>') + '</td>' +
+    '<td class="eff">' + mdEffortSelect(m) + '</td>' +
     '<td class="efs" style="white-space:normal">' + effs + '</td>' +
     '<td class="num">' + (m.context_length ? Math.round(m.context_length / 1000) + 'K' : '—') + '</td>' +
     outCell(m, pr) + '</tr>';
+}
+
+// mdEffortSelect 网关生效档下拉：「继承全局（有效档）」或该模型声明档位之一。
+// 视觉上就是「当前生效值」，改选即写 thinking.model_defaults 并热生效。
+function mdEffortSelect(m) {
+  if (m.image_generation || !(m.supported_efforts || []).length) {
+    return '<span style="color:var(--ink-3)">—</span>';
+  }
+  const effs = m.supported_efforts.slice();
+  const cur = String(m.model_effort_override || '');
+  const inherited = m.global_default_effort || m.default_effort || '—';
+  const opts = ['<option value=""' + (cur === '' ? ' selected' : '') + '>继承全局 · ' + esc(inherited) + '</option>'];
+  for (const e of effs) {
+    opts.push('<option value="' + esc(e) + '"' + (cur === e ? ' selected' : '') + '>' + esc(e) + '</option>');
+  }
+  const dis = m.thinking_policy_enabled ? '' : ' disabled title="配置页「思考档位」未启用，网关不补档"';
+  return '<select class="md-effort" data-id="' + esc(m.id) + '"' + dis + ' aria-label="网关生效档">' + opts.join('') + '</select>';
+}
+
+// mdSaveEffort 行内保存单模型默认档；成功后就地更新一行（不重拉上游目录）。
+// 清空/选「继承全局」→ 删除覆盖，回到全局默认档。
+async function mdSaveEffort(id, effort) {
+  try {
+    const d = await api('models/thinking', { method: 'POST', body: JSON.stringify({ id, effort }) });
+    const idx = mdAll.findIndex(m => m.id === id);
+    if (idx >= 0) {
+      const m = mdAll[idx];
+      if (!effort) {
+        delete m.model_effort_override;
+        m.gateway_default_effort = m.global_default_effort || m.default_effort;
+      } else {
+        m.model_effort_override = effort;
+        m.gateway_default_effort = effort;
+      }
+    }
+    renderModels();
+    const need = (d.restart_required || []).length;
+    toast('已保存 ' + id + ' → ' + (effort || '继承全局') + (need ? '（' + need + ' 项需重启）' : '（已热生效）'), 'ok');
+  } catch (e) {
+    toast('保存失败：' + e.message, 'bad');
+    renderModels();
+  }
 }
 
 function renderModels() {
   const tb = $('mdBody');
   const list = mdSortList(mdAll.filter(m => mdMatch(m)));
   if (!list.length) {
-    tb.innerHTML = '<tr><td colspan="7"><div class="empty">没有符合当前筛选条件的模型</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="8"><div class="empty">没有符合当前筛选条件的模型</div></td></tr>';
   } else {
     tb.innerHTML = list.map(m => mdRowHtml(m, mdProbeOf(m.id))).join('');
   }
@@ -929,6 +972,11 @@ for (const [id, key] of [['mdRealm', 'realm'], ['mdCap', 'cap'], ['mdEffort', 'e
   el.onchange = () => { mdFilter[key] = el.value; renderModels(); };
 }
 $('mdReset').onclick = resetModelFilter;
+// 行内档位下拉：事件委托（表格整体重渲染，逐行绑定会随 innerHTML 丢失）。
+$('mdBody').addEventListener('change', ev => {
+  const sel = ev.target.closest('select.md-effort');
+  if (sel) mdSaveEffort(sel.dataset.id, sel.value);
+});
 $('btnModels').onclick = () => loadModels(true);
 
 /* ── 日志（频道：全部/任务/对话/系统） ─────────────────────────────── */

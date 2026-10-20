@@ -127,7 +127,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 | **补领清扫** | `schedule.task_sweep_enabled`（默认开）/ `task_sweep_minutes`（默认 15）：周期 accept 待接受的、claim 已达标未领的（不跑行为链路），兜住新号自动跑当时未达标与 `autoActions` 白名单外的任务 |
 | **保留积分** | `pool.reserve_credits`（缺省 10）设最低余额：余额**已知**且低于该值的账号停止接单，面板账号行显示「保留积分」标记，避免余额被用到 0 触发上游提醒短信；仍留在池中照常签到/猫猫旅行，充值后自动恢复。`0` = 关闭 |
 | **用量页积分历史** | 用量视图新增「积分与 token 按小时」表：每小时列出请求数 / prompt / completion / 合计 token / **扣费积分** / 兑换率（1 积分换多少 token，倒序，最近一小时在最上面），卡片另给窗口内积分合计与兑换率。积分取上游末帧 `usage.credit`，**未观测到的请求不计**（「没测到」≠「没花钱」）；随小时桶一起折叠进日桶，保留 90 天 |
-| **模型能力透出** | `/v1/models` 附带 `supported_efforts` / `default_effort` / 积分倍率 / 输入输出上限等上游真实字段 |
+| **模型能力透出** | `/v1/models` 附带 `reasoning_supported_efforts` / `reasoning_default_effort` / 积分倍率 / 输入输出上限等上游真实字段 |
 | **安全加固** | 常量时间密钥比较（`internal/httpauth`）、CSP 与安全响应头、UID 白名单防路径穿越、前端属性转义修复 |
 | **领养前置修复** | 上游 `travelAdopt` 缺 report 前置导致领养恒失败于 `first_buddy task not completed yet`；本分支修正后实测 +300 到账（3/3 账号） |
 | **原生工具调用标记还原** | 上游（DeepSeek 系）的工具调用原生语法是带全角竖线的标记文本，**仅在请求声明了 `tools` 时**才被上游解析成结构化 `tool_calls`。实测 `tools` 声明在中转环节（Responses → chat/completions 等）丢失是常态，此时模型仍想调工具，标记就以纯文本落进 `content`——Codex 这类只执行结构化 `function_call` 的客户端会把它当普通正文写进会话历史，回合直接结束、工具一次都没跑。网关在出站响应里识别并还原成 `tool_calls`（流式与非流式都覆盖，见下文） |
@@ -408,6 +408,7 @@ curl -s http://localhost:7863/v1/responses \
 | `thinking.default_effort` | `max` | 客户端请求没带 `reasoning_effort` 时补这一档：`off/minimal/low/medium/high/xhigh/max`。`max` = 取**该模型声明档位里的最高档**；模型不支持该档时退化为其最高档，绝不发上游不认的档。保存后**热生效** |
 | `thinking.client_priority` | `true` | `true` = 客户端显式档位优先（只补缺省）；`false` = **网关优先**，用默认档覆盖客户端显式档位。保存后**热生效** |
 | `thinking.override_scope` | `level` | 网关优先时的覆盖范围：`level` = 只覆盖档位，尊重客户端 `thinking.type=disabled` / `reasoning_effort=off` 的关闭意图；`all` = 连开关一起覆盖（`thinking.type` 翻成 `enabled` 并写档位）。保存后**热生效** |
+| `thinking.model_defaults` | `{}` | 每模型覆盖默认档：键 `cn:模型ID` / `global:模型ID`（裸模型名也接受），值 = 档位或 `inherit`（跟随全局）。优先级高于 `thinking.default_effort`；面板「模型能力」页的「网关生效档」下拉就是写这个键，保存即热生效。启动校验只接受合法档位 |
 | `prompt.mode` | `custom` | 系统提示词模式：`custom` = 网关用自有提示词替换客户端 system；`append` = 开头连续 system/developer 块后插网关提示词（既有消息逐字不动）；`passthrough` = 透传客户端原始 system（降级重试仍切中性提示词） |
 | `prompt.file` | 空 | 提示词文件路径；空 = 内置默认（约 2KB）；路径非空但不可读 → 启动报错 |
 | `upstash.url` / `upstash.token` | 空 | 空 = 纯内存模式（Noop 降级，功能照常） |
@@ -791,6 +792,8 @@ http://127.0.0.1:7863/panel/
 上游只给单一 `reasoning.effort`、不给 `supportedEfforts` 的模型，声明为**单档列表**（档位 = 该值），不再退化成“无档位”。
 
 **优先级规则**（由 `thinking.*` 控制）：客户端带合法档位时，`client_priority=true` 原样保留（仅当模型不认该档时按既有 nearest 逻辑归一到最近可用档）；`client_priority=false` 用 `default_effort` 覆盖。客户端不带档位时恒补默认档。`reasoning_effort=off/none` 与 `thinking.type=disabled` 都算**显式关闭**：客户端优先时尊重；网关优先时只有 `override_scope=all` 才连开关一起翻开，`level` 仍然尊重（deepseek 落成 `thinking.type=disabled`，其余模型清掉档位字段）。目标档解析统一走“≤ 目标档的最高可用档，否则最低可用档”，绝不把上游不认的档发出去。
+
+**每模型默认档**：面板「模型能力」页每行两个档位列——「上游默认档」（目录声明的值，灰）与「网关生效档」（下拉：`继承全局 · <有效档>` + 该模型声明档位，选中即写 `thinking.model_defaults`，保存热生效）。`/v1/models` 的 `reasoning_default_effort` 与面板「网关生效档」同源（同一份策略解析），`reasoning_upstream_default_effort` 保留目录原值做诊断，两者不会再出现“页面显示 high、客户端被补 max”的分裂。
 
 ### 流式行为细节
 
