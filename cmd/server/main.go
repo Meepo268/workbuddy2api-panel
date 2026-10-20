@@ -712,6 +712,7 @@ func effortPolicyOf(cfg *Config) *upstream.EffortPolicy {
 		DefaultEffort:  cfg.Thinking.DefaultEffort,
 		ClientPriority: cfg.Thinking.ClientPriority,
 		OverrideScope:  cfg.Thinking.OverrideScope,
+		ModelDefaults:  cfg.Thinking.ModelDefaults,
 	}
 }
 

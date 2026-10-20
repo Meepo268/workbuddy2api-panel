@@ -204,6 +204,10 @@ type Config struct {
 		//   level = 只覆盖档位字段，客户端 thinking.type=disabled 时仍尊重关闭；
 		//   all   = 连开关一起覆盖（disabled → enabled，只改请求里已有的 thinking 对象）。
 		OverrideScope string `json:"override_scope"`
+		// ModelDefaults 每模型覆盖默认档：键 "cn:模型ID"/"global:模型ID"（裸模型名也接受），
+		// 值 = 具体档位或 "inherit"（跟随上面的全局 DefaultEffort）。面板「模型能力」页
+		// 行内编辑写入，保存即热生效；未列出的模型一律走全局默认档。
+		ModelDefaults map[string]string `json:"model_defaults"`
 	} `json:"thinking"`
 
 	Prompt struct {
@@ -924,6 +928,23 @@ func (c *Config) normalizeThinking() error {
 	case "level", "all":
 	default:
 		return fmt.Errorf("thinking.override_scope: %q 不是合法值（level / all）", c.Thinking.OverrideScope)
+	}
+	// 每模型覆盖档：空键丢弃；inherit/空值归一化为「不覆盖」（不写回配置）；
+	// 具体值必须是合法档位，拼错启动即报错（避免面板行内编辑静默失效）。
+	for key, val := range c.Thinking.ModelDefaults {
+		k := strings.TrimSpace(key)
+		v := strings.ToLower(strings.TrimSpace(val))
+		if k == "" || v == "" || v == "inherit" {
+			delete(c.Thinking.ModelDefaults, key)
+			continue
+		}
+		if !upstream.IsEffortLevel(v) {
+			return fmt.Errorf("thinking.model_defaults[%s]: %q 不是合法值（inherit 或 off/minimal/low/medium/high/xhigh/max）", k, val)
+		}
+		if k != key || v != val {
+			delete(c.Thinking.ModelDefaults, key)
+			c.Thinking.ModelDefaults[k] = v
+		}
 	}
 	return nil
 }

@@ -87,6 +87,60 @@ func TestThinkingEnvOverride(t *testing.T) {
 	}
 }
 
+func TestThinkingModelDefaultsNormalized(t *testing.T) {
+	c, err := ParseConfig([]byte(`{"thinking":{"model_defaults":{" cn:demo ":" HIGH ","cn:blank":"inherit","":"max"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Thinking.ModelDefaults["cn:demo"]; got != "high" {
+		t.Errorf("cn:demo=%q want high（键值去空格+小写）", got)
+	}
+	if _, has := c.Thinking.ModelDefaults["cn:blank"]; has {
+		t.Errorf("inherit 应归一化为未覆盖（删除），got %v", c.Thinking.ModelDefaults)
+	}
+	if _, has := c.Thinking.ModelDefaults[""]; has {
+		t.Errorf("空键应删除，got %v", c.Thinking.ModelDefaults)
+	}
+}
+
+func TestThinkingModelDefaultsInvalidRejected(t *testing.T) {
+	_, err := ParseConfig([]byte(`{"thinking":{"model_defaults":{"cn:demo":"turbo"}}}`))
+	if err == nil || !strings.Contains(err.Error(), "thinking.model_defaults") {
+		t.Fatalf("err=%v want thinking.model_defaults 报错", err)
+	}
+}
+
+func TestThinkingHotReloadModelDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := livecfg.New(livecfg.Snapshot{APIKey: cfg.APIKey})
+	p := pool.New("")
+	defer p.Close()
+	up := upstream.New()
+	sch := scheduler.New(scheduler.Config{Pool: p, Upstream: up})
+	fields, err := saveConfig([]byte(`{"thinking":{"model_defaults":{"cn:demo":"xhigh"}}}`),
+		path, live, p, up, sch, nil, nil, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fields) != 0 {
+		t.Fatalf("thinking.model_defaults 变更不应要求重启，got %v", fields)
+	}
+	snap := up.EffortPolicySnapshot()
+	if snap == nil || snap.ModelDefaults["cn:demo"] != "xhigh" {
+		t.Fatalf("热应用快照=%+v", snap)
+	}
+	if got := snap.DefaultEffortFor("cn", "demo"); got != "xhigh" {
+		t.Errorf("DefaultEffortFor(cn,demo)=%q want xhigh", got)
+	}
+}
+
 // TestThinkingHotReload 保存 thinking 段应热生效且不产生重启项。
 func TestThinkingHotReload(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")

@@ -71,7 +71,8 @@
     "enabled": true,
     "default_effort": "max",
     "client_priority": true,
-    "override_scope": "level"
+    "override_scope": "level",
+    "model_defaults": {}
   },
   "prompt": {
     "mode": "passthrough",
