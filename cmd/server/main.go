@@ -660,6 +660,12 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	})
 	up.SanitizeFingerprints.Store(newCfg.Features.SanitizeBlacklistFingerprints)
 	up.SetEffortPolicy(effortPolicyOf(newCfg)) // thinking 档位策略热生效（无需重启）
+	// 面板保存后打一行策略摘要：客户端优先/网关优先的生效状态直接可查，
+	// 避免「页面勾了但日志看着像网关优先」时只能靠猜（客户端没发档位也会补档）。
+	log.Printf("thinking policy: enabled=%v default=%s priority=%s scope=%s overrides=%d",
+		newCfg.Thinking.Enabled, newCfg.Thinking.DefaultEffort,
+		map[bool]string{true: "client", false: "gateway"}[newCfg.Thinking.ClientPriority],
+		newCfg.Thinking.OverrideScope, len(newCfg.Thinking.ModelDefaults))
 	p.SetBreaker(newCfg.Pool.BreakerThreshold, newCfg.BreakerCooldownDur, newCfg.BreakerCooldownMaxD)
 	p.SetMaxInFlight(newCfg.Pool.MaxInFlight)
 	p.SetMaxInFlightGlobal(newCfg.Pool.MaxInFlightGlobal)

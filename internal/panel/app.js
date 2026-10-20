@@ -1361,6 +1361,7 @@ async function loadConfig() {
       else if (Array.isArray(v)) el.value = v.join(', ');
       else el.value = v == null ? '' : v;
     }
+    syncThinkingPriorityUi(); // 下拉回显跟随 checkbox 的真实值
     markDurationFields(); // 回填后重置校验态（清掉残留红框；现值来自后端必然合法）
     $('cfgKey').disabled = !!d.api_key_env_managed;
     $('cfgKey').title = d.api_key_env_managed ? '访问密钥由启动环境变量设置，请在部署配置中修改。' : '';
@@ -1388,6 +1389,18 @@ function collectConfig() {
   }
   return out;
 }
+
+/* 优先模式在界面上是下拉（客户端优先/网关优先），配置里仍是布尔
+ * thinking.client_priority：下拉只负责改写隐藏 checkbox，保存通路不变。
+ * 这样 collectConfig / Go 侧 schema / 已有配置文件都不用迁移。 */
+function syncThinkingPriorityUi() {
+  const ui = $('thinkingPriorityUi'), cb = $('thinkingClientPriority');
+  if (ui && cb) ui.value = cb.checked ? 'client' : 'gateway';
+}
+if ($('thinkingPriorityUi')) $('thinkingPriorityUi').onchange = () => {
+  const cb = $('thinkingClientPriority');
+  if (cb) cb.checked = $('thinkingPriorityUi').value === 'client';
+};
 /* Go 时长字段即时校验：空 = 沿用现值（collectConfig 跳过发送）；非空必须是
    ParseDuration 语法（30m / 2h / 600s / 1h30m，可组合可带小数）。与后端
    config.go normalize() 的 time.ParseDuration 同口径，脏值在前端就地标红，

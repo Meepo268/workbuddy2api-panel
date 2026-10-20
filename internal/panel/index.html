@@ -309,6 +309,9 @@ fieldset { border: none; margin-bottom: 6px; }
 legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom: 10px; }
 .hr { height: 1px; background: var(--line-soft); margin: 4px 0 16px; }
 .switch { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; }
+/* 开关紧贴文案：普通 .switch 把控件推到最右，短文案时距离太远、看不出和谁的开关。 */
+.switch.inline { justify-content: flex-start; gap: 10px; }
+.switch.inline .hint { margin-left: 2px; }
 .switch .lb { font-size: 13.5px; }
 .savebar {
   display: flex; align-items: center; gap: 12px; padding: 13px 17px;
@@ -1151,30 +1154,36 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
         <div class="box">
           <header><h3>思考档位</h3></header>
           <div class="pad">
-            <div class="switch"><span class="lb">网关补档 / 覆盖</span>
-              <input type="checkbox" name="thinking_enabled"></div>
+            <div class="switch inline"><span class="lb">启用档位补全与覆盖</span>
+              <input type="checkbox" name="thinking_enabled">
+              <span class="hint">关闭后网关不补档、不覆盖，/v1/models 只声明上游默认档</span></div>
             <div class="grid2">
-              <label class="fld"><span class="lb">网关默认档</span>
+              <label class="fld"><span class="lb">默认档位</span>
                 <select name="thinking_default_effort">
-                  <option value="max">max — 该模型声明档位里的最高档</option>
+                  <option value="max">max（该模型声明档位里的最高档）</option>
                   <option value="xhigh">xhigh</option>
                   <option value="high">high</option>
                   <option value="medium">medium</option>
                   <option value="low">low</option>
                   <option value="minimal">minimal</option>
-                  <option value="off">off</option>
+                  <option value="off">off（关闭思考）</option>
                 </select>
-                <span class="hint">客户端没带档位时按它补齐；模型不支持时退化为该模型最高档</span></label>
-              <label class="fld"><span class="lb">网关优先时的覆盖范围</span>
-                <select name="thinking_override_scope">
-                  <option value="level">level — 只覆盖档位，尊重客户端关闭思考</option>
-                  <option value="all">all — 连思考开关一起覆盖</option>
+                <span class="hint">客户端没带档位时补它；模型不支持时退化为该模型最高档</span></label>
+              <label class="fld"><span class="lb">优先模式</span>
+                <select id="thinkingPriorityUi">
+                  <option value="client">客户端优先：客户端带了档位就听客户端</option>
+                  <option value="gateway">网关优先：用默认档覆盖客户端档位</option>
                 </select>
-                <span class="hint">仅在上方「客户端档位优先」关闭（网关优先）时生效</span></label>
+                <span class="hint">仅「启用档位补全与覆盖」开启时生效</span></label>
             </div>
-            <div class="switch"><span class="lb">客户端档位优先（关闭 = 网关优先）</span>
-              <input type="checkbox" name="thinking_client_priority"></div>
-            <div class="hint" style="margin-top:10px">保存即热生效。/v1/models 为每个模型声明 reasoning_supported_efforts / reasoning_default_effort 及上下文、模态等能力，客户端添加模型时可自动填入。</div>
+            <label class="fld"><span class="lb">网关优先时覆盖到</span>
+              <select name="thinking_override_scope">
+                <option value="level">只覆盖档位：客户端显式关闭思考仍然尊重</option>
+                <option value="all">档位 + 思考开关：客户端关思考也会被打开</option>
+              </select>
+              <span class="hint">只有「网关优先」下才生效；默认只碰档位，不动思考开关</span></label>
+            <input type="checkbox" name="thinking_client_priority" id="thinkingClientPriority" hidden>
+            <div class="hint" style="margin-top:10px">保存即热生效。/v1/models 为每个模型声明 reasoning_supported_efforts / reasoning_default_effort 及上下文、模态、工具等能力，客户端添加模型时可自动填入。</div>
           </div>
         </div>
 
