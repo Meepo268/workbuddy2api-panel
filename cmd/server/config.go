@@ -15,6 +15,7 @@ import (
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/prompt"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/safefile"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
 )
 
 // Config 顶层配置。
@@ -187,6 +188,24 @@ type Config struct {
 		Hidden []string `json:"hidden"`
 	} `json:"models"`
 
+	Thinking struct {
+		// Enabled 网关档位策略总开关（默认 true）：客户端缺档时按 DefaultEffort
+		// 补齐；false 时完全不介入（请求体原样透传，/v1/models 只声明上游默认档）。
+		Enabled bool `json:"enabled"`
+		// DefaultEffort 网关默认档："max"（默认）= 该模型声明档位里的最高档，
+		// 不是字面 max——模型最高档只有 high 时就补 high，绝不越界；
+		// 也可写具体档位（off/minimal/low/medium/high/xhigh/max），模型不支持时
+		// 同样退化为它的最高档。
+		DefaultEffort string `json:"default_effort"`
+		// ClientPriority 客户端显式档位是否优先（默认 true，即客户端优先）。
+		// true = 客户端带了档位就听客户端的；false = 网关优先，用 DefaultEffort 覆盖。
+		ClientPriority bool `json:"client_priority"`
+		// OverrideScope 网关优先时的覆盖范围（默认 "level"）：
+		//   level = 只覆盖档位字段，客户端 thinking.type=disabled 时仍尊重关闭；
+		//   all   = 连开关一起覆盖（disabled → enabled，只改请求里已有的 thinking 对象）。
+		OverrideScope string `json:"override_scope"`
+	} `json:"thinking"`
+
 	Prompt struct {
 		// Mode passthrough（默认）= 透传客户端原始 system（降级重试仍会切到 Degraded）；
 		// custom = 网关用自有系统提示词替换客户端 system/developer；
@@ -357,6 +376,13 @@ func Default() *Config {
 	c.Global.Enabled = true
 	c.Features.SanitizeBlacklistFingerprints = true
 	c.Prompt.Mode = "passthrough" // 缺省 passthrough：透传客户端原始 system（对齐上游；custom 由用户显式选择）
+	// 档位策略缺省「启用 + 模型最高档 + 客户端优先 + 只覆盖档位」：网关声明了
+	// /v1/models 的档位能力后，补默认档是同一套能力的自然延续；客户端显式选择
+	// 仍然受尊重，避免升级即改变既有客户端行为。
+	c.Thinking.Enabled = true
+	c.Thinking.DefaultEffort = "max"
+	c.Thinking.ClientPriority = true
+	c.Thinking.OverrideScope = "level"
 	c.Pool.MaxInFlight = 3
 	// MaxInFlightGlobal 缺省 2：global 域 WAF 风控更紧，压低单号并发（WAF 403 修复
 	// P1-1）；0/负数 normalize 回落默认（与 max_in_flight 的 0=不限语义不同，分档键
@@ -538,6 +564,22 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("WB2A_PROMPT_FILE"); v != "" {
 		c.Prompt.File = v
 	}
+	if v := os.Getenv("WB2A_THINKING_ENABLED"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			c.Thinking.Enabled = b
+		}
+	}
+	if v := os.Getenv("WB2A_THINKING_DEFAULT_EFFORT"); v != "" {
+		c.Thinking.DefaultEffort = v
+	}
+	if v := os.Getenv("WB2A_THINKING_CLIENT_PRIORITY"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			c.Thinking.ClientPriority = b
+		}
+	}
+	if v := os.Getenv("WB2A_THINKING_OVERRIDE_SCOPE"); v != "" {
+		c.Thinking.OverrideScope = v
+	}
 	if v := os.Getenv("WB2A_EXPIRING_SOON"); v != "" {
 		c.Pool.ExpiringSoon = v
 	}
@@ -602,6 +644,10 @@ func (c *Config) EnvironmentManagedFields() []string {
 		{"WB2A_DEVICE_TOKEN_FILE", "upstream.device_token_file", ""}, {"WB2A_PASSTHROUGH_IP", "upstream.passthrough_ip", "bool"},
 		{"WB2A_SANITIZE_FINGERPRINTS", "features.sanitize_blacklist_fingerprints", "bool"},
 		{"WB2A_PROMPT_MODE", "prompt.mode", ""}, {"WB2A_PROMPT_FILE", "prompt.file", ""},
+		{"WB2A_THINKING_ENABLED", "thinking.enabled", "bool"},
+		{"WB2A_THINKING_DEFAULT_EFFORT", "thinking.default_effort", ""},
+		{"WB2A_THINKING_CLIENT_PRIORITY", "thinking.client_priority", "bool"},
+		{"WB2A_THINKING_OVERRIDE_SCOPE", "thinking.override_scope", ""},
 		{"WB2A_EXPIRING_SOON", "pool.expiring_soon", ""}, {"WB2A_PREFER_EXPIRING", "pool.prefer_expiring", "bool"},
 		{"WB2A_SCHEDULE_JITTER_MINUTES", "schedule.jitter_minutes", "int"},
 		{"WB2A_ADMIN_ENABLED", "admin.enabled", "bool"}, {"WB2A_ADMIN_AUDIT_ENABLED", "admin.audit_enabled", "bool"},
@@ -852,7 +898,34 @@ func (c *Config) normalize() error {
 	if err := c.validateScheduleHours(); err != nil {
 		return err
 	}
+	if err := c.normalizeThinking(); err != nil {
+		return err
+	}
 	return c.normalizePrompt()
+}
+
+// normalizeThinking 校验/归一化 thinking 档位策略。
+//
+// default_effort 接受 "max"（模型声明最高档）或标准档位名，大小写不敏感；
+// override_scope 只接受 level/all，空值落到 level。非法值 fail fast：静默回落会
+// 让用户在面板改完以为生效、实际按另一套语义跑（同 prompt.mode 的处理）。
+func (c *Config) normalizeThinking() error {
+	c.Thinking.DefaultEffort = strings.ToLower(strings.TrimSpace(c.Thinking.DefaultEffort))
+	if c.Thinking.DefaultEffort == "" {
+		c.Thinking.DefaultEffort = "max"
+	}
+	if c.Thinking.DefaultEffort != "max" && !upstream.IsEffortLevel(c.Thinking.DefaultEffort) {
+		return fmt.Errorf("thinking.default_effort: %q 不是合法值（max 或 off/minimal/low/medium/high/xhigh/max）", c.Thinking.DefaultEffort)
+	}
+	c.Thinking.OverrideScope = strings.ToLower(strings.TrimSpace(c.Thinking.OverrideScope))
+	switch c.Thinking.OverrideScope {
+	case "":
+		c.Thinking.OverrideScope = "level"
+	case "level", "all":
+	default:
+		return fmt.Errorf("thinking.override_scope: %q 不是合法值（level / all）", c.Thinking.OverrideScope)
+	}
+	return nil
 }
 
 // normalizePrompt 校验 prompt.mode 并按 file 加载提示词文本（custom/append 模式）。

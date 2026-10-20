@@ -1149,6 +1149,36 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
         </div>
 
         <div class="box">
+          <header><h3>思考档位</h3></header>
+          <div class="pad">
+            <div class="switch"><span class="lb">网关补档 / 覆盖</span>
+              <input type="checkbox" name="thinking_enabled"></div>
+            <div class="grid2">
+              <label class="fld"><span class="lb">网关默认档</span>
+                <select name="thinking_default_effort">
+                  <option value="max">max — 该模型声明档位里的最高档</option>
+                  <option value="xhigh">xhigh</option>
+                  <option value="high">high</option>
+                  <option value="medium">medium</option>
+                  <option value="low">low</option>
+                  <option value="minimal">minimal</option>
+                  <option value="off">off</option>
+                </select>
+                <span class="hint">客户端没带档位时按它补齐；模型不支持时退化为该模型最高档</span></label>
+              <label class="fld"><span class="lb">网关优先时的覆盖范围</span>
+                <select name="thinking_override_scope">
+                  <option value="level">level — 只覆盖档位，尊重客户端关闭思考</option>
+                  <option value="all">all — 连思考开关一起覆盖</option>
+                </select>
+                <span class="hint">仅在上方「客户端档位优先」关闭（网关优先）时生效</span></label>
+            </div>
+            <div class="switch"><span class="lb">客户端档位优先（关闭 = 网关优先）</span>
+              <input type="checkbox" name="thinking_client_priority"></div>
+            <div class="hint" style="margin-top:10px">保存即热生效。/v1/models 为每个模型声明 reasoning_supported_efforts / reasoning_default_effort 及上下文、模态等能力，客户端添加模型时可自动填入。</div>
+          </div>
+        </div>
+
+        <div class="box">
           <header><h3>上游与高级</h3></header>
           <div class="pad">
             <div class="grid3">

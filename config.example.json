@@ -66,6 +66,13 @@
     "_comment": "hidden: 不对外暴露的模型黑名单。裸名=两域都藏；\"cn:xxx\"/\"global:xxx\"=只藏该域。/v1/models 列表过滤 + chat 点名拒绝，面板保存后热生效。",
     "hidden": []
   },
+  "thinking": {
+    "_comment": "网关档位策略：客户端没带 reasoning_effort 时按 default_effort 补齐（max = 该模型声明档位里的最高档）；client_priority=true 客户端显式档位优先，false 网关优先；override_scope=level 只覆盖档位、尊重客户端 thinking.type=disabled，all 连开关一起覆盖。默认启用、max、客户端优先、level；保存即热生效。",
+    "enabled": true,
+    "default_effort": "max",
+    "client_priority": true,
+    "override_scope": "level"
+  },
   "prompt": {
     "mode": "passthrough",
     "file": ""

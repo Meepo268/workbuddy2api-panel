@@ -404,6 +404,10 @@ curl -s http://localhost:7863/v1/responses \
 | `upstream.user_agent` | 空 | 出站 User-Agent 覆盖（空 = 现状 `CLI/2.63.2 CodeBuddy/2.63.2`）。官网「使用端」列按出站 UA 服务端归因；官方 WorkBuddy 桌面 UA 为 `WorkBuddy/<version>`，需要时可配 |
 | `features.sanitize_blacklist_fingerprints` | `true` | 出站请求体黑名单指纹脱敏 |
 | `models.hidden` | `[]` | 模型黑名单：`["deepseek-pro"]` 裸名隐藏两域，`["cn:legacy-model"]` / `["global:x"]` 只隐藏该域。**列表不列 + 点名调用直接拒绝**（`/v1/models` 过滤、`/v1/chat/completions` 与 `/v1/images/*` 拒绝）——只藏列表不够，知道名字仍可硬调。面板「模型黑名单」（逗号分隔）保存后**热生效** |
+| `thinking.enabled` | `true` | 网关思考档位策略总开关：`true` 时按下面三项补档/覆盖；`false` 完全交给客户端（沿用既有档位归一）。保存后**热生效** |
+| `thinking.default_effort` | `max` | 客户端请求没带 `reasoning_effort` 时补这一档：`off/minimal/low/medium/high/xhigh/max`。`max` = 取**该模型声明档位里的最高档**；模型不支持该档时退化为其最高档，绝不发上游不认的档。保存后**热生效** |
+| `thinking.client_priority` | `true` | `true` = 客户端显式档位优先（只补缺省）；`false` = **网关优先**，用默认档覆盖客户端显式档位。保存后**热生效** |
+| `thinking.override_scope` | `level` | 网关优先时的覆盖范围：`level` = 只覆盖档位，尊重客户端 `thinking.type=disabled` / `reasoning_effort=off` 的关闭意图；`all` = 连开关一起覆盖（`thinking.type` 翻成 `enabled` 并写档位）。保存后**热生效** |
 | `prompt.mode` | `custom` | 系统提示词模式：`custom` = 网关用自有提示词替换客户端 system；`append` = 开头连续 system/developer 块后插网关提示词（既有消息逐字不动）；`passthrough` = 透传客户端原始 system（降级重试仍切中性提示词） |
 | `prompt.file` | 空 | 提示词文件路径；空 = 内置默认（约 2KB）；路径非空但不可读 → 启动报错 |
 | `upstash.url` / `upstash.token` | 空 | 空 = 纯内存模式（Noop 降级，功能照常） |
@@ -720,11 +724,11 @@ http://127.0.0.1:7863/panel/
 | **积分任务**（账号行内「任务」按钮） | 展示全部任务（进度 / 奖励分数与能量 / 状态）；「全部接受」批量报名；「一键完成」覆盖 **17 个任务**（推进进度 + 异步计分等待 + **自动领奖**，幂等可重复点）；其余任务展示操作指引 |
 | **模型与档位** | 实时查询上游：每模型的积分倍率、默认思考档、支持的档位（含「off（可关）」）、上下文长度与最大输出；若存在探测数据，最大输出列显示**实测上限与钳制告警**（见「探测模型真实输出上限」）。列表支持**按条件查询**：关键词（ID / 名称 / 描述 / 厂商，空格分词 AND）、域（CN / Global）、能力（工具 / 视觉 / 思考 / 默认）、思考档位、价格（折扣 / 限时免费 / 打折），以及按倍率、上下文、最大输出、ID 排序。**出图模型的倍率另有口径**：上游目录只在部分域给牌价，真实单价在每次出图回执 `usage.credit` 里——CN `hunyuan-image-alpha` 牌价 `x5.00`／实扣固定 **5.71/张**（与尺寸、画质、`n` 无关），global `gpt-image-2.5-sunburst` **目录不报**、按输出图像 token 计费（实测 `credit = tokens ÷ 7300`：1024² low 0.54–0.55／high 4.84）。面板因此把「牌价」与「实扣」分列，并按尺寸×画质分档显示（`charge_variants`），不用均值互相覆盖 |
 | **用量** | 指标卡（请求数 / 总 token / prompt / completion / 失败 / 平均延迟）+ Token 时序图（渐变柱、均值线、峰值标注）+ 用量明细（按账号 / 模型 / 域切换）+ 积分扣除历史。**时间范围**支持 今天 / 近 24 小时 / 近 3 天 / 近 7 天 / 近 30 天 / 全部历史 / **自定义区间**（精确到分钟），卡片、表格与图表全部按同一窗口统计 |
-| **配置** | 在线编辑 config.json：API 密钥、定时任务（四类任务时点与开关、余额刷新间隔）、账号池与流量治理参数、上游超时与 UA、提示词模式、脱敏/粘性开关、日志来源记录开关 |
+| **配置** | 在线编辑 config.json：API 密钥、定时任务（四类任务时点与开关、余额刷新间隔）、账号池与流量治理参数、上游超时与 UA、提示词模式、**思考档位策略（默认档 / 客户端优先 / 覆盖范围）**、脱敏/粘性开关、日志来源记录开关 |
 | **运行日志** | **请求记录表**（时间 / 结果 / 模型 / 账号 / **来源 IP** / **User-Agent** / 耗时 / Token / 积分 / 请求 ID），支持关键词与结果筛选、读取条数，以及 今天 / 近 24 小时 / 近 7 天 / **自定义区间**等**时间范围**查询（由归档侧按时间取，不是筛已拉取的条目）+ 最近 500 行服务日志（按任务 / 对话 / 系统分频道，可开关自动滚动），并新增 **积分历史**（每次真实查到余额与上次比对，变动即留痕） |
 
 **配置热生效**：保存配置后，`api_key`、`cooldown.soft_rate`、`features.sanitize_blacklist_fingerprints`、
-`models.hidden`、`logging.request_client_info`、`pool.*`（熔断/在途/权重）、`schedule.*`（时点/开关/余额刷新间隔）**立即生效，无需重启**；
+`models.hidden`、`thinking.*`、`logging.request_client_info`、`pool.*`（熔断/在途/权重）、`schedule.*`（时点/开关/余额刷新间隔）**立即生效，无需重启**；
 涉及进程装配期依赖的字段（`listen`、`auth_dir`、`state_file`、`upstream.*`、`upstash.*`、`session_sticky.ttl`、`admin`、`metrics`、`alerting`）
 保存后会提示"需重启进程生效"。配置写入采用「深合并且原子替换」：只更新面板表单覆盖的键，
 用户手写的未知键与其余字段原样保留。
@@ -747,7 +751,7 @@ http://127.0.0.1:7863/panel/
 | `POST /v1/responses` | Bearer（`api_key` 非空时） | `codex_responses`：Codex Responses 入站，转成现有 chat 完成并回写 Responses 事件流。不保存 `previous_response_id` / `store` |
 | `POST /v1/messages`、`POST /messages` | Bearer 或 `x-api-key`（`api_key` 非空时） | `anthropic_messages`：Anthropic Messages 入站，转成现有 chat 完成并回写 Messages JSON / SSE。不回传 thinking（上游没有 signature） |
 | `GET /v1/responses` | Bearer（`api_key` 非空时） | 固定回 **426 Upgrade Required**（带 `Upgrade: websocket`）。Codex 客户端在 `supports_websockets`/`prefer_websockets` 下会先探 WS 升级，426 是它**立刻且粘性**回落 HTTPS 的信号；否则它要空转 `stream_max_retries` 次才回落（日志里的 `Reconnecting… n/5`）。本网关不保存 `previous_response_id` / 连接内状态，WS 复用无从谈起 |
-| `GET /v1/models` | Bearer（`api_key` 非空时） | 模型列表（纯动态拉取，缓存 1h；失败返回空列表 + 5min 负缓存）；**国际版（global）目录以官方桌面端 UA 族为准**——只有该族下发的模型进目录，IDE/CLI 族与企业端点只用来补同 id 的 context/efforts/倍率等字段（issue #216：另两族的独有模型实测在 chat 端点回 11102，列出来只会让客户端选到死模型）；每模型带 `context_length`/`max_output_tokens`（四级查找链：上游目录 → 内置知识表 → model.json 缓存 → models.dev）、`reasoning_supported_efforts`/`reasoning_default_effort` 思考档位及描述/标签/倍率等全字段（上游有返回时） |
+| `GET /v1/models` | Bearer（`api_key` 非空时） | 模型列表（纯动态拉取，缓存 1h；失败返回空列表 + 5min 负缓存）；**国际版（global）目录以官方桌面端 UA 族为准**——只有该族下发的模型进目录，IDE/CLI 族与企业端点只用来补同 id 的 context/efforts/倍率等字段（issue #216：另两族的独有模型实测在 chat 端点回 11102，列出来只会让客户端选到死模型）；每模型带 `context_length`/`max_output_tokens`（四级查找链：上游目录 → 内置知识表 → model.json 缓存 → models.dev）、`reasoning_supported_efforts`/`reasoning_default_effort` 思考档位、`context_window`/`max_input_tokens`/`max_completion_tokens` 与模态等能力别名（见「模型能力声明与思考档位策略」），以及描述/标签/倍率等全字段（上游有返回时） |
 | `GET /status` | Bearer（`api_key` 非空时） | 账号状态汇总 + 每账号详情（积分/冷却/熔断/在途/粘性）+ `model_locks`（模型级限流全清单，无锁为 null） |
 | `GET /healthz` | 无 | 健康检查：有 healthy 且未占满账号返回 200，否则 503；响应带身份标识（见下） |
 | `GET /metrics` | Bearer（`metrics.enabled` 时才存在） | Prometheus 文本。缺省不注册 |
@@ -766,6 +770,27 @@ http://127.0.0.1:7863/panel/
 响应同时带 `X-Service: workbuddy2api` 头。这两个身份标识用于区分**本网关**与同端口上可能残留的其他服务——对方即使返回 2xx 也不会带该字段 / 头，宿主探测据此避免"假成功"。
 
 **宿主健康探测指引**：强校验（推荐）用 `/status` + `api_key`——只有持有正确 `api_key` 的本网关返回 200，其他服务返回 401 / 404；弱校验（不适合持 key 的负载均衡器）用 `/healthz` + `service` 字段判据（`/healthz` 恒无鉴权，`service == "workbuddy2api"` 才算命中本网关）。容器自带 `HEALTHCHECK` 用的就是弱校验（仅进程内自检，够用）。
+
+### 模型能力声明与思考档位策略
+
+`/v1/models` 除 `id`/`name` 外按模型声明能力，字段为空即省略（客户端应按缺省处理）。同值多别名是为了让不同客户端的自动发现都能命中：
+
+| 字段 | 含义 |
+|---|---|
+| `context_length` / `context_window` / `max_input_tokens` | 上下文窗口（同一值的三个别名） |
+| `max_output_tokens` / `max_completion_tokens` | 最大输出 token（未知时省略） |
+| `supports_images` / `input_modalities` / `output_modalities` | 视觉能力：bool + 模态数组（纯文本 `["text"]`；支持图片输入 `["text","image"]`；输出恒 `["text"]`） |
+| `supports_tool_call` | 是否支持工具调用 |
+| `supports_reasoning` / `can_disable_thinking` / `only_reasoning` | 是否思考模型 / 能否关思考 / 是否强制思考 |
+| `reasoning_supported_efforts` | 可用思考档位（wire 值，升序），客户端据此自动填档位选择器 |
+| `reasoning_options` | 与上等价的 `[{"type":"effort","values":[...]}]` 形状（OpenRouter / models.dev 消费方） |
+| `reasoning_default_effort` | 网关实际会补的默认档 = 策略解析结果（见下） |
+| `reasoning_upstream_default_effort` | 上游目录声明的默认档；策略关闭时 `reasoning_default_effort` 取它 |
+| `reasoning_effort` / `reasoning_summary` | 上游目录给出的固定提示（老字段，保留兼容） |
+
+上游只给单一 `reasoning.effort`、不给 `supportedEfforts` 的模型，声明为**单档列表**（档位 = 该值），不再退化成“无档位”。
+
+**优先级规则**（由 `thinking.*` 控制）：客户端带档位时，`client_priority=true` 原样保留（仅当模型不认该档时按既有 nearest 逻辑归一到最近可用档）；`client_priority=false` 用 `default_effort` 覆盖。客户端不带档位时恒补默认档。目标档解析统一走“≤ 目标档的最高可用档，否则最低可用档”，绝不把上游不认的档发出去。`override_scope=level` 时客户端 `thinking.type=disabled` / `reasoning_effort=off` 视为显式关闭，网关优先也不翻开关；`all` 时才连开关一起覆盖（`thinking.type` → `enabled`）。
 
 ### 流式行为细节
 
