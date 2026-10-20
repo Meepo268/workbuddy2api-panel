@@ -14,6 +14,8 @@
 // 但其档位是「可枚举单档」而非「无选择器」，照抄参考仓库如实暴露。
 package upstream
 
+import "strings"
+
 // effortCap 一个模型的档位能力（对齐产品兜底表条目 reasoningEfforts + defaultReasoningEffort）。
 type effortCap struct {
 	efforts       []string
@@ -113,33 +115,95 @@ func containsEffort(efforts []string, want string) bool {
 	return false
 }
 
-// globalEffortMap global 域降级用的 effort 能力表：静态兜底表为基，远端桶覆盖（权威优先）。
+// effortLevelRank 档位标准名判定：大小写/空白归一后必须命中 effortRank。
+func effortLevelRank(level string) (string, int, bool) {
+	lv := strings.ToLower(strings.TrimSpace(level))
+	idx, ok := effortRank[lv]
+	return lv, idx, ok
+}
+
+// IsEffortLevel 判断字符串是否是合法档位名（off/minimal/low/medium/high/xhigh/max）。
+func IsEffortLevel(level string) bool {
+	_, _, ok := effortLevelRank(level)
+	return ok
+}
+
+// highestEffort 取声明档位里的最高一档（按 effortRank 判据，不依赖列表顺序）。
+// 未知档全部忽略；一个都不认识时返回 false。
+func highestEffort(efforts []string) (string, bool) {
+	best := ""
+	bestIdx := -1
+	for _, e := range efforts {
+		lv, idx, ok := effortLevelRank(e)
+		if !ok {
+			continue
+		}
+		if idx > bestIdx {
+			best, bestIdx = lv, idx
+		}
+	}
+	return best, bestIdx >= 0
+}
+
+// ResolveGatewayEffort 计算网关策略的生效档位。
 //
-// prepareBody 对 global 请求调此函数（而非直接用远端桶），因为 global 上游可能不下发
-// supportedEfforts——此时也必须按产品静态表降级（issue #84：deepseek-v4.1-flash 国际版
-// 只认 high，客户端传 low/max 必降级到 high，否则上游 400 毁掉请求）。
-// 语义对齐参考仓库 effortsFor（remoteMeta → productFallback → 静态表），只取前两级：
-// 远端桶（探测已解析）→ 本产品静态表（本文件），缺档位即无（不再到通用静态表）。
-func globalEffortMap(remoteEfforts map[string][]string, remoteDefaults map[string]string) (map[string][]string, map[string]string) {
-	efforts := make(map[string][]string, len(globalEffortFallback)+len(remoteEfforts))
-	defs := make(map[string]string, len(globalEffortFallback)+len(remoteDefaults))
-	// 静态兜底为基。
-	for id, cap := range globalEffortFallback {
+// configured 为空或 "max" 表示「该模型声明档位里的最高档」；具体档位必须是模型
+// 支持的档位，否则同样退化为最高档——绝不向出站请求写入模型不支持的档位。
+// 模型没有声明档位时返回 false（调用方保持原样）。
+func ResolveGatewayEffort(configured string, supported []string) (string, bool) {
+	if len(supported) == 0 {
+		return "", false
+	}
+	want := strings.ToLower(strings.TrimSpace(configured))
+	if want == "" || want == "max" {
+		return highestEffort(supported)
+	}
+	for _, e := range supported {
+		if strings.EqualFold(strings.TrimSpace(e), want) {
+			return strings.TrimSpace(e), true
+		}
+	}
+	return highestEffort(supported)
+}
+
+// requestEffortMap 组装请求侧（降级/补档）用的档位能力表：本 realm 静态兜底表为基，
+// 远端探测桶按模型覆盖（权威优先）。
+//
+// 与展示侧 EffortListing 同源规则：远端给了某模型档位时，默认档只认远端同批下发的
+// 值；远端没给默认档就删掉静态默认档，避免「档位来自远端、默认档来自静态表」的跨源
+// 拼接（见 EffortListing 注释）。远端没有档位的模型继续沿用静态表。
+func requestEffortMap(realm string, remoteEfforts map[string][]string, remoteDefaults map[string]string) (map[string][]string, map[string]string) {
+	table := cnEffortFallback
+	if realmKey(realm) == "global" {
+		table = globalEffortFallback
+	}
+	efforts := make(map[string][]string, len(table)+len(remoteEfforts))
+	defs := make(map[string]string, len(table)+len(remoteDefaults))
+	for id, cap := range table {
 		efforts[id] = append([]string(nil), cap.efforts...)
 		if cap.defaultEffort != "" {
 			defs[id] = cap.defaultEffort
 		}
 	}
-	// 远端权威覆盖（仅当远端确实下发了该模型档位）。
 	for id, v := range remoteEfforts {
-		if len(v) > 0 {
-			efforts[id] = v
+		if len(v) == 0 {
+			continue
 		}
-	}
-	for id, v := range remoteDefaults {
-		if v != "" {
-			defs[id] = v
+		efforts[id] = v
+		if d := strings.TrimSpace(remoteDefaults[id]); d != "" {
+			defs[id] = d
+		} else {
+			delete(defs, id)
 		}
 	}
 	return efforts, defs
+}
+
+// globalEffortMap global 域兼容封装：见 requestEffortMap。
+//
+// prepareBody 对 global 请求调此函数（而非直接用远端桶），因为 global 上游可能不下发
+// supportedEfforts——此时也必须按产品静态表降级（issue #84：deepseek-v4.1-flash 国际版
+// 只认 high，客户端传 low/max 必降级到 high，否则上游 400 毁掉请求）。
+func globalEffortMap(remoteEfforts map[string][]string, remoteDefaults map[string]string) (map[string][]string, map[string]string) {
+	return requestEffortMap("global", remoteEfforts, remoteDefaults)
 }

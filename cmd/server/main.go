@@ -168,6 +168,9 @@ func main() {
 	// 聊天 SSE 流中空闲上限（S3 空闲监控读取）。
 	up.IdleTimeout = time.Duration(cfg.Upstream.IdleTimeoutSeconds) * time.Second
 	up.SanitizeFingerprints.Store(cfg.Features.SanitizeBlacklistFingerprints)
+	// 网关档位策略（配置节 thinking，热生效：面板保存时 saveConfig 重新 Store）：
+	// 客户端缺档补默认档 / 客户端优先或网关优先 / scope=all 覆盖关闭意图。
+	up.SetEffortPolicy(effortPolicyOf(cfg))
 	// 出站 UA 与归属头（issue #42 + 上游同步）：
 	// UserAgent 非空则完全覆盖；ClientVersion/CliVersion 缺省对齐官方形态；
 	// ClientName 非空时 chat 路径注入 X-IDE-* 四头（用量归因对齐官方桌面端）。
@@ -656,6 +659,13 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 		HiddenModels:         livecfg.NormalizeHiddenModels(newCfg.Models.Hidden),
 	})
 	up.SanitizeFingerprints.Store(newCfg.Features.SanitizeBlacklistFingerprints)
+	up.SetEffortPolicy(effortPolicyOf(newCfg)) // thinking 档位策略热生效（无需重启）
+	// 面板保存后打一行策略摘要：客户端优先/网关优先的生效状态直接可查，
+	// 避免「页面勾了但日志看着像网关优先」时只能靠猜（客户端没发档位也会补档）。
+	log.Printf("thinking policy: enabled=%v default=%s priority=%s scope=%s overrides=%d",
+		newCfg.Thinking.Enabled, newCfg.Thinking.DefaultEffort,
+		map[bool]string{true: "client", false: "gateway"}[newCfg.Thinking.ClientPriority],
+		newCfg.Thinking.OverrideScope, len(newCfg.Thinking.ModelDefaults))
 	p.SetBreaker(newCfg.Pool.BreakerThreshold, newCfg.BreakerCooldownDur, newCfg.BreakerCooldownMaxD)
 	p.SetMaxInFlight(newCfg.Pool.MaxInFlight)
 	p.SetMaxInFlightGlobal(newCfg.Pool.MaxInFlightGlobal)
@@ -698,6 +708,18 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	}
 
 	return restartRequiredFields(baseline, newCfg), nil
+}
+
+// effortPolicyOf 把配置节 thinking（已 normalize）翻译成 upstream 档位策略。
+// 启动装配与面板保存热应用共用，避免两处字段映射漂移。
+func effortPolicyOf(cfg *Config) *upstream.EffortPolicy {
+	return &upstream.EffortPolicy{
+		Enabled:        cfg.Thinking.Enabled,
+		DefaultEffort:  cfg.Thinking.DefaultEffort,
+		ClientPriority: cfg.Thinking.ClientPriority,
+		OverrideScope:  cfg.Thinking.OverrideScope,
+		ModelDefaults:  cfg.Thinking.ModelDefaults,
+	}
 }
 
 // applyCNChatBase 把 config cn.chat_base 装配进上游 client；空则保留内置默认，
@@ -760,6 +782,12 @@ func restartRequiredFields(current, next *Config) []string {
 // 未提交的兄弟键（含用户手写的未知键）保持原样。
 func mergeConfigMaps(cur, incoming map[string]any) map[string]any {
 	for k, v := range incoming {
+		// null = 显式删除该键：面板「清除每模型覆盖」这类操作必须能穿透深合并，
+		// 否则旧值会被合并回来（空 map 做不到这一点）。
+		if v == nil {
+			delete(cur, k)
+			continue
+		}
 		if inMap, ok := v.(map[string]any); ok {
 			if curMap, ok := cur[k].(map[string]any); ok {
 				cur[k] = mergeConfigMaps(curMap, inMap)

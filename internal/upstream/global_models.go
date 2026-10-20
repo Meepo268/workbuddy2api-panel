@@ -237,11 +237,12 @@ func (c *Client) probeGlobalModels(a *auth.Auth) (names []string, infos []ModelI
 		ch := make(chan probeResult, 1)
 		go func() {
 			// chatBase 已按 realm 切 global base。
-			byID, perr := c.fetchV3ConfigModelMap(a, ua)
+			cat, perr := c.fetchV3ConfigModelMap(a, ua)
 			if perr != nil {
 				ch <- probeResult{err: perr}
 				return
 			}
+			byID := cat.Models
 			ids := make([]string, 0, len(byID))
 			outInfos := make([]ModelInfo, 0, len(byID))
 			// 出图模型旁路留存（/v1/models 以 image_generation 标记列出），照旧不进对话列表。

@@ -803,6 +803,11 @@ type Client struct {
 	// 面板保存配置热改 + chat 热路径并发读写，用 atomic.Bool 消除数据竞争。
 	SanitizeFingerprints atomic.Bool
 
+	// effortPolicy 网关档位策略（配置节 thinking，见 effort_policy.go）：缺档补
+	// 默认档 / 客户端优先 / scope=all 覆盖关闭意图。面板保存配置热改 + chat 热
+	// 路径并发读写，用 atomic.Pointer 整体替换，读侧拿到的永远是一份完整快照。
+	effortPolicy atomic.Pointer[EffortPolicy]
+
 	// UserAgent 出站 User-Agent 显式覆盖（非空时全路径生效，优先于默认三段式）。
 	// 空 = 默认官方形态：chat/refresh/FetchModels 走
 	// `WorkBuddy/<ver> WorkBuddy/<ver> CLI/<cliVer>`；billing 走 `WorkBuddy/<ver>`
@@ -958,23 +963,42 @@ func (c *Client) chatBase(a *auth.Auth) string {
 }
 
 // prepareBody 组装出站请求体（脱敏开关由 Client.SanitizeFingerprints 控制）。
-// prepareBody 组装出站请求体（脱敏开关由 Client.SanitizeFingerprints 控制）。
 // realm 为账号 Realm()（cn/global），供 efforts 缓存分桶（跨域 effort 集合不互相污染）。
 // 返回改写后的请求体与本次实际生效的思考档位（见 normalizeReasoningEffort）。
 func (c *Client) prepareBody(body []byte, realm, uid, conversationID string) ([]byte, string) {
-	efforts, defs := c.effortsSnapshot(realm), c.defaultEffortsSnapshot(realm)
+	// 降级/补档数据源 = 本 realm 静态兜底表为基、远端探测桶按模型覆盖（同源规则
+	// 见 requestEffortMap）。CN 此前只吃远端桶：探测正常时无差别，但探测失败或冷
+	// 启动时静态表里的档位约束会丢；两域统一后 /v1/models 的声明与请求侧校验同源。
+	efforts, defs := requestEffortMap(realm, c.effortsSnapshot(realm), c.defaultEffortsSnapshot(realm))
 	maxOut := c.modelMaxOutSnapshot(realm)
-	if realmKey(realm) == "global" {
-		// global 域降级源 = 远端探测桶（权威）∪ 产品静态兜底表（全局 21 名内档位如
-		// deepseek-v4.1-flash ['high']）。当前探测桶为空时也按静态表降级，不全程透传
-		//（issue #84：往 WorkBuddy 上游发 low/max 非法，须降级到 high）。
-		efforts, defs = globalEffortMap(efforts, defs)
-	}
 	// prompt_cache_key 注入（P0 费用优化，费用降 ~17×）：按账号隔离的稳定缓存键，
 	// 让同一客户端对同一账号的连续请求命中上游前缀缓存。与 body 归一化共用
 	// prepareBodyOpt 的同一次 map 解析，不再二次 Unmarshal/Marshal。
-	body, effort := prepareBodyOpt(body, c.SanitizeFingerprints.Load(), efforts, defs, maxOut, uid, conversationID, true)
+	body, effort := prepareBodyOpt(body, c.SanitizeFingerprints.Load(), efforts, defs, maxOut, uid, conversationID, true, realmKey(realm), c.EffortPolicySnapshot())
 	return body, effort
+}
+
+// SetEffortPolicy 热更新网关档位策略；nil 或 Enabled=false 等价于不介入。
+func (c *Client) SetEffortPolicy(p *EffortPolicy) {
+	if p == nil {
+		c.effortPolicy.Store(nil)
+		return
+	}
+	cp := p.normalized()
+	cp.ModelDefaults = copyModelDefaults(cp.ModelDefaults)
+	c.effortPolicy.Store(&cp)
+}
+
+// EffortPolicySnapshot 返回当前档位策略快照；nil 表示未启用或未配置。
+// 返回副本而不是内部指针：调用方改快照字段不会污染热更新中的共享策略。
+func (c *Client) EffortPolicySnapshot() *EffortPolicy {
+	p := c.effortPolicy.Load()
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	cp.ModelDefaults = copyModelDefaults(cp.ModelDefaults)
+	return &cp
 }
 
 // effortsSnapshot 返回 effort 能力缓存副本；nil 表示未知（透传不降级）。
@@ -1726,19 +1750,37 @@ func (c *Client) fetchEnterpriseModels(a *auth.Auth) ([]ModelInfo, error) {
 	return out, nil
 }
 
-// fetchV3Models 单路探测 /v3/config（IDE UA 完整能力版，见 codeBuddyIDEUA）。
-// v3 面取全量 models（不按 agents[cli] 过滤，与 global 探测口径一致），按同一
-// nonChatModel 规则剔除非对话条目（selected 会选模型报 code=11102）。
+// fetchV3Models 单路探测 /v3/config（WorkBuddy 三段式 UA，与真机出站 UA 同族）。
+// 名单口径：agents[name=cli].models ∪ 试用横幅（上游的**上架名单**），
+// data.models 只作为能力元数据；名单缺失（老配置/异常下发）时退回全量目录。
+// 另按 nonChatModel 剔除非对话条目（selected 会选模型报 code=11102）。
 // 失败返回错误（调用方降级为仅企业端点）。
 func (c *Client) fetchV3Models(a *auth.Auth) ([]ModelInfo, error) {
-	byID, err := c.fetchV3ConfigModelMap(a, c.v3ProbeUA(a))
+	cat, err := c.fetchV3ConfigModelMap(a, c.v3ProbeUA(a))
 	if err != nil {
 		return nil, err
 	}
 	// 出图模型旁路留存（供 /v1/models 以 image_generation 标记列出），下面照旧不进对话列表。
-	c.stashGenerationModels("cn", sortedInfos(byID))
-	out := make([]ModelInfo, 0, len(byID))
-	for _, mi := range byID {
+	c.stashGenerationModels("cn", sortedInfos(cat.Models))
+	listed := make(map[string]bool, len(cat.CLIIDs)+len(cat.TrialIDs))
+	for _, id := range cat.CLIIDs {
+		listed[strings.TrimSpace(id)] = true
+	}
+	for _, id := range cat.TrialIDs {
+		listed[strings.TrimSpace(id)] = true
+	}
+	// 上架名单缺失时不能把「目录里仍在、实际已下架」的旧模型全放出来：
+	// 退回全量只在 CLI 名单为空（老版本配置/异常下发）时发生，并留日志便于排查。
+	// 注意判据是 CLIIDs 为空而不是 listed 为空——只剩试用横幅时仍需过滤全量目录。
+	useAll := len(cat.CLIIDs) == 0
+	if useAll {
+		log.Printf("WARN: [upstream] v3/config agents[cli].models missing; falling back to full catalog (%d models)", len(cat.Models))
+	}
+	out := make([]ModelInfo, 0, len(cat.Models))
+	for id, mi := range cat.Models {
+		if !useAll && !listed[id] {
+			continue
+		}
 		if nonChatModel(mi.ID, mi.MaxTokens, mi.Tags) {
 			continue
 		}
@@ -1747,6 +1789,7 @@ func (c *Client) fetchV3Models(a *auth.Auth) ([]ModelInfo, error) {
 	if len(out) == 0 {
 		return nil, fmt.Errorf("v3/config returned empty models")
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
 
@@ -2032,14 +2075,29 @@ func v3ConfigDomain(a *auth.Auth, chatBase string) string {
 	return "copilot.tencent.com"
 }
 
+// v3ConfigCatalog /v3/config 的解析结果：全量能力表 + 上架名单。
+//
+// 该端点的 data.models 是**全量能力目录**（实测 CN 62 条），其中包含大量
+// CLI 已不再上架的旧模型（glm-4.6 / deepseek-v3-1 / hy3-b …），而真正的
+// 上架名单在 data.agents[name=cli].models（实测 CN 20 条）+ 试用横幅。
+// 两者混用会出现「/v1/models 列出 53 个、客户端实际可用 20 个」的漂移。
+type v3ConfigCatalog struct {
+	// Models 全量能力表（按 id），供补元数据/出图旁路使用。
+	Models map[string]ModelInfo
+	// CLIIDs data.agents[name=cli].models；空 = 上游未下发（调用方应退回全量）。
+	CLIIDs []string
+	// TrialIDs 试用横幅 modelId（不在 data.models 里，但实际可调用）。
+	TrialIDs []string
+}
+
 // fetchV3ConfigModelMap 拉官方 IDE 配置目录，按模型 id 建能力表。
 // 该端点对 UA 敏感：必须带 CodeBuddy/CodeBuddyIDE 版本，否则 400 code=12403。
-// ua 为该次请求的 User-Agent；空串等价 codeBuddyIDEUA。该端点对 UA 敏感且**不同 UA 下发
-// 不同模型集合**（见 codeBuddyCLIUA 注释），global 探测据此并发两路取并集。
-func (c *Client) fetchV3ConfigModelMap(a *auth.Auth, ua string) (map[string]ModelInfo, error) {
+// ua 为该次请求的 User-Agent；空串等价 v3ProbeUA。该端点对 UA 敏感且**不同 UA 下发
+// 不同模型集合**（见 codeBuddyCLIUA 注释），global 探测据此并发多路取并集。
+func (c *Client) fetchV3ConfigModelMap(a *auth.Auth, ua string) (v3ConfigCatalog, error) {
 	req, err := http.NewRequest(http.MethodGet, c.chatBase(a)+"/v3/config", nil)
 	if err != nil {
-		return nil, err
+		return v3ConfigCatalog{}, err
 	}
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
@@ -2057,21 +2115,27 @@ func (c *Client) fetchV3ConfigModelMap(a *auth.Auth, ua string) (map[string]Mode
 	c.injectCodeBuddyRequest(req)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return nil, err
+		return v3ConfigCatalog{}, err
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
 		// 读失败 → 传输层错误：半截 body 不进解析（不罚号）。
-		return nil, fmt.Errorf("read body: %w", err)
+		return v3ConfigCatalog{}, fmt.Errorf("read body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("v3/config status %d: %s", resp.StatusCode, truncate(string(raw), 120))
+		return v3ConfigCatalog{}, fmt.Errorf("v3/config status %d: %s", resp.StatusCode, truncate(string(raw), 120))
 	}
 	var env struct {
 		Code int `json:"code"`
 		Data struct {
 			Models []dynModelEntry `json:"models"`
+			// agents[name=cli].models 才是**上架名单**：data.models 是全量能力目录，
+			// 含大量 CLI 已下架但上游仍未删的旧模型（见 v3ConfigCatalog 注释）。
+			Agents []struct {
+				Name   string   `json:"name"`
+				Models []string `json:"models"`
+			} `json:"agents"`
 			// 试用模型横幅：上游把「N 天免费试用」的模型放在这里，**不在 data.models 里**。
 			// 实测 global 侧 hy4-preview-f 只出现在此（modelId=hy4-preview-f、
 			// targetModelId=hy4-preview、trialDays=14），纯 data.models 解析会漏掉它。
@@ -2087,17 +2151,23 @@ func (c *Client) fetchV3ConfigModelMap(a *auth.Auth, ua string) (map[string]Mode
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil, fmt.Errorf("v3/config parse: %w", err)
+		return v3ConfigCatalog{}, fmt.Errorf("v3/config parse: %w", err)
 	}
 	if env.Code != 0 {
-		return nil, fmt.Errorf("v3/config code=%d", env.Code)
+		return v3ConfigCatalog{}, fmt.Errorf("v3/config code=%d", env.Code)
 	}
-	out := make(map[string]ModelInfo, len(env.Data.Models))
+	cat := v3ConfigCatalog{Models: make(map[string]ModelInfo, len(env.Data.Models))}
 	for _, m := range env.Data.Models {
 		if strings.TrimSpace(m.ID) == "" {
 			continue
 		}
-		out[m.ID] = m.modelInfo()
+		cat.Models[m.ID] = m.modelInfo()
+	}
+	for _, ag := range env.Data.Agents {
+		if ag.Name == "cli" {
+			cat.CLIIDs = append([]string(nil), ag.Models...)
+			break
+		}
 	}
 	// 补入试用横幅模型（ModelTrialBanner）：上游把「N 天免费试用」的模型只放在这里，
 	// data.models 里没有，故纯目录解析会漏（实测 global 侧 hy4-preview-f 即如此，
@@ -2114,29 +2184,30 @@ func (c *Client) fetchV3ConfigModelMap(a *auth.Auth, ua string) (map[string]Mode
 		if id == "" {
 			continue
 		}
-		if _, exists := out[id]; exists {
+		cat.TrialIDs = append(cat.TrialIDs, id)
+		if _, exists := cat.Models[id]; exists {
 			continue
 		}
 		mi := ModelInfo{ID: id}
 		if tgt := strings.TrimSpace(b.TargetModelID); tgt != "" {
-			if base, ok := out[tgt]; ok {
+			if base, ok := cat.Models[tgt]; ok {
 				mi = base
 				mi.ID = id
 			}
 		}
 		mi.Credits = ""
 		mi.Tags = nil
-		out[id] = mi
+		cat.Models[id] = mi
 	}
 	// 挂当前生效的限时优惠（modelPromotions）：Credits 字段是**牌价**（转正后基准
 	// 倍率，如 hy4-preview-f 的 x0.29），而 WorkBuddy 客户端显示的是生效价（试用/
 	// 折扣窗口内 factor 打折）——面板据此展示「生效价 + 标签 + 牌价」。
-	applyModelPromotions(out, env.Data.ModelPromotions)
+	applyModelPromotions(cat.Models, env.Data.ModelPromotions)
 
-	if len(out) == 0 {
-		return nil, fmt.Errorf("v3/config returned empty models")
+	if len(cat.Models) == 0 {
+		return v3ConfigCatalog{}, fmt.Errorf("v3/config returned empty models")
 	}
-	return out, nil
+	return cat, nil
 }
 
 // UserResource 查询账号积分余额与总额度（所有套餐聚合）。remain 负值钳 0；

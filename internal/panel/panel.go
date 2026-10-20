@@ -186,6 +186,8 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/request_logs", p.withAuth(p.requestLogs))
 	p.mux.HandleFunc("GET /panel/api/credit_history", p.withAuth(p.creditHistory))
 	p.mux.HandleFunc("GET /panel/api/models", p.withAuth(p.models))
+	p.mux.HandleFunc("POST /panel/api/models/thinking", p.withAuth(p.modelThinking))
+	p.mux.HandleFunc("POST /panel/api/models/hidden", p.withAuth(p.modelHiddenToggle))
 	p.mux.HandleFunc("POST /panel/api/login/start", p.withAuth(p.loginStart))
 	p.mux.HandleFunc("GET /panel/api/login/poll", p.withAuth(p.loginPoll))
 	p.mux.HandleFunc("GET /panel/api/login/regions", p.withAuth(p.loginRegions))
@@ -486,7 +488,7 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 				fetchErrs = append(fetchErrs, "cn: "+err.Error())
 			} else {
 				for _, mi := range infos {
-					out = append(out, panelModelEntry("cn", mi, mi.Efforts, mi.DefaultEffort, p.cfg.Upstream.HTTP))
+					out = append(out, panelModelEntry("cn", mi, mi.Efforts, mi.DefaultEffort, p.cfg.Upstream.HTTP, p.effortPolicy()))
 				}
 			}
 		}
@@ -504,7 +506,7 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 				} else {
 					efforts, defaults := p.cfg.Upstream.GlobalEffortSnapshot()
 					for _, mi := range infos {
-						out = append(out, panelModelEntry("global", mi, efforts[mi.ID], defaults[mi.ID], p.cfg.Upstream.HTTP))
+						out = append(out, panelModelEntry("global", mi, efforts[mi.ID], defaults[mi.ID], p.cfg.Upstream.HTTP, p.effortPolicy()))
 					}
 				}
 			}
@@ -542,7 +544,7 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 			if mi.GenerationKind != "image" {
 				continue
 			}
-			e := panelModelEntry(realm, mi, nil, "", p.cfg.Upstream.HTTP)
+			e := panelModelEntry(realm, mi, nil, "", p.cfg.Upstream.HTTP, p.effortPolicy())
 			e["image_generation"] = true
 			// 有牌价也照样带实测（此前只在 credits 为空时才带，导致 CN 的 5.71 被
 			// x5.00 盖住、用户看到的价格比实付低）。
@@ -613,6 +615,9 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "没有可用账号：请先在面板添加账号再查询")
 		return
 	}
+	// 下游可见性标记来自 models.hidden（与 /v1/models 同一份归一化名单）；列表本身
+	// 不过滤，隐藏的模型也要在这里显示出来才能重新打开。
+	p.applyHiddenFlags(out)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":     true,
 		"models": out,
@@ -626,7 +631,7 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 // panelModelEntry 构造单个模型条目（两域共用）：id 带 realm 前缀（调用值即显示值），
 // context_length / max_output_tokens 走四级查找链，effort 档位按 realm 域取
 // EffortListing（远端权威 ∪ 静态兜底表）——与 /v1/models 同一口径，两侧不再漂移。
-func panelModelEntry(realm string, mi upstream.ModelInfo, remoteEfforts []string, remoteDefault string, httpc *http.Client) map[string]any {
+func panelModelEntry(realm string, mi upstream.ModelInfo, remoteEfforts []string, remoteDefault string, httpc *http.Client, policy *upstream.EffortPolicy) map[string]any {
 	entry := map[string]any{
 		"id":                   realm + ":" + mi.ID,
 		"name":                 mi.Name,
@@ -668,9 +673,40 @@ func panelModelEntry(realm string, mi upstream.ModelInfo, remoteEfforts []string
 		entry["supported_efforts"] = efforts
 		if def != "" {
 			entry["default_effort"] = def
+			entry["upstream_default_effort"] = def
+		}
+		// 网关生效档 / 全局默认档：与 /v1/models 的 reasoning_default_effort 同源
+		//（同一份 EffortPolicy），面板「模型能力」页与对外声明不会再出现两个值。
+		policyOn := policy != nil && policy.Enabled
+		globalEffective := def
+		entry["thinking_policy_enabled"] = policyOn
+		if policyOn {
+			if r, ok := upstream.ResolveGatewayEffort(policy.DefaultEffort, efforts); ok {
+				globalEffective = r
+			}
+			entry["global_default_effort"] = globalEffective
+			if r, ok := upstream.ResolveGatewayEffort(policy.DefaultEffortFor(realm, mi.ID), efforts); ok {
+				entry["gateway_default_effort"] = r
+			} else {
+				entry["gateway_default_effort"] = def
+			}
+			if ov := policy.ModelDefault(realm, mi.ID); ov != "" {
+				entry["model_effort_override"] = ov
+			}
+		} else {
+			entry["global_default_effort"] = def
+			entry["gateway_default_effort"] = def
 		}
 	}
 	return entry
+}
+
+// effortPolicy 当前档位策略快照；未装配上游 → nil。
+func (p *Panel) effortPolicy() *upstream.EffortPolicy {
+	if p.cfg.Upstream == nil {
+		return nil
+	}
+	return p.cfg.Upstream.EffortPolicySnapshot()
 }
 
 // modelProbes 返回模型输出上限的探测结果（scripts/probe_max_tokens.py --panel-out

@@ -867,6 +867,14 @@ function mdAvailabilityTag(m) {
 // 上游模型繁忙度（/v2/chat/busy）文案：只标需要避让的三档，idle/normal 不打扰。
 const BUSY_WORDS = { busy: '繁忙', congested: '拥堵', unavailable: '不可用' };
 
+// mdVisToggle 下游可见性开关：写 models.hidden（与配置页「模型黑名单」同一份名单）。
+// 关闭 = 该模型不再出现在 /v1/models，也不能被下游调用；面板列表仍然显示它，
+// 否则关掉之后就没法在这里重新打开。
+function mdVisToggle(m) {
+  return '<label class="switch inline" title="关闭后该模型不出现在 /v1/models，也不能被下游调用（保存即热生效）">' +
+    '<input type="checkbox" class="md-vis" data-id="' + esc(m.id) + '"' + (m.hidden ? '' : ' checked') + '></label>';
+}
+
 function mdRowHtml(m, pr) {
   const eff = (m.supported_efforts || []).slice();
   if (m.can_disable_thinking && eff.length && !eff.includes('off')) eff.push('off（可关）');
@@ -887,19 +895,80 @@ function mdRowHtml(m, pr) {
   }
   const capHtml = caps.length ? '<div class="id" style="margin-top:2px">' + caps.join(' ') + '</div>' : '';
   const tip = m.description ? ' title="' + esc(m.description) + '"' : '';
-  return '<tr><td class="mark" aria-hidden="true"><i></i></td><td class="who"' + tip + '><div class="nm"><span class="mid">' + esc(m.id) + '</span>' + mdAvailabilityTag(m) + '</div><div class="id">' + esc(m.name || '') + '</div>' + capHtml + '</td>' +
+  return '<tr' + (m.hidden ? ' class="md-hidden"' : '') + '><td class="mark" aria-hidden="true"><i></i></td><td class="who"' + tip + '><div class="nm"><span class="mid">' + esc(m.id) + '</span>' + mdAvailabilityTag(m) + '</div><div class="id">' + esc(m.name || '') + '</div>' + capHtml + '</td>' +
     '<td class="num">' + rateCell(m) + '</td>' +
-    '<td>' + (m.default_effort && !m.image_generation ? '<span class="tag ok">' + esc(m.default_effort) + '</span>' : '<span style="color:var(--ink-3)">—</span>') + '</td>' +
+    '<td>' + (m.upstream_default_effort && !m.image_generation ? '<span class="tag mute">' + esc(m.upstream_default_effort) + '</span>' : '<span style="color:var(--ink-3)">—</span>') + '</td>' +
+    '<td class="eff">' + mdEffortSelect(m) + '</td>' +
     '<td class="efs" style="white-space:normal">' + effs + '</td>' +
     '<td class="num">' + (m.context_length ? Math.round(m.context_length / 1000) + 'K' : '—') + '</td>' +
-    outCell(m, pr) + '</tr>';
+    outCell(m, pr) + '<td class="num">' + mdVisToggle(m) + '</td></tr>';
+}
+
+// mdEffortSelect 网关生效档下拉：「继承全局（有效档）」或该模型声明档位之一。
+// 视觉上就是「当前生效值」，改选即写 thinking.model_defaults 并热生效。
+function mdEffortSelect(m) {
+  if (m.image_generation || !(m.supported_efforts || []).length) {
+    return '<span style="color:var(--ink-3)">—</span>';
+  }
+  const effs = m.supported_efforts.slice();
+  const cur = String(m.model_effort_override || '');
+  const inherited = m.global_default_effort || m.default_effort || '—';
+  const opts = ['<option value=""' + (cur === '' ? ' selected' : '') + '>继承全局 · ' + esc(inherited) + '</option>'];
+  for (const e of effs) {
+    opts.push('<option value="' + esc(e) + '"' + (cur === e ? ' selected' : '') + '>' + esc(e) + '</option>');
+  }
+  const dis = m.thinking_policy_enabled ? '' : ' disabled title="配置页「思考档位」未启用，网关不补档"';
+  return '<select class="md-effort" data-id="' + esc(m.id) + '"' + dis + ' aria-label="网关生效档">' + opts.join('') + '</select>';
+}
+
+// mdSaveEffort 行内保存单模型默认档；成功后就地更新一行（不重拉上游目录）。
+// 清空/选「继承全局」→ 删除覆盖，回到全局默认档。
+async function mdSaveEffort(id, effort) {
+  try {
+    const d = await api('models/thinking', { method: 'POST', body: JSON.stringify({ id, effort }) });
+    const idx = mdAll.findIndex(m => m.id === id);
+    if (idx >= 0) {
+      const m = mdAll[idx];
+      if (!effort) {
+        delete m.model_effort_override;
+        m.gateway_default_effort = m.global_default_effort || m.default_effort;
+      } else {
+        m.model_effort_override = effort;
+        m.gateway_default_effort = effort;
+      }
+    }
+    renderModels();
+    const need = (d.restart_required || []).length;
+    toast('已保存 ' + id + ' → ' + (effort || '继承全局') + (need ? '（' + need + ' 项需重启）' : '（已热生效）'), 'ok');
+  } catch (e) {
+    toast('保存失败：' + e.message, 'bad');
+    renderModels();
+  }
+}
+
+// mdSaveHidden 行内切换下游可见性；成功后只改本地标记并重绘该视图。
+async function mdSaveHidden(id, hidden) {
+  try {
+    const d = await api('models/hidden', { method: 'POST', body: JSON.stringify({ id, hidden }) });
+    const m = mdAll.find(x => x.id === id);
+    if (m) {
+      if (hidden) m.hidden = true;
+      else delete m.hidden;
+    }
+    renderModels();
+    const need = (d.restart_required || []).length;
+    toast((hidden ? '已隐藏 ' : '已暴露 ') + id + (need ? '（' + need + ' 项需重启）' : '（已热生效）'), 'ok');
+  } catch (e) {
+    toast('保存失败：' + e.message, 'bad');
+    renderModels(); // 重绘回到服务端状态，别让勾选停在失败值
+  }
 }
 
 function renderModels() {
   const tb = $('mdBody');
   const list = mdSortList(mdAll.filter(m => mdMatch(m)));
   if (!list.length) {
-    tb.innerHTML = '<tr><td colspan="7"><div class="empty">没有符合当前筛选条件的模型</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="9"><div class="empty">没有符合当前筛选条件的模型</div></td></tr>';
   } else {
     tb.innerHTML = list.map(m => mdRowHtml(m, mdProbeOf(m.id))).join('');
   }
@@ -929,6 +998,16 @@ for (const [id, key] of [['mdRealm', 'realm'], ['mdCap', 'cap'], ['mdEffort', 'e
   el.onchange = () => { mdFilter[key] = el.value; renderModels(); };
 }
 $('mdReset').onclick = resetModelFilter;
+// 行内档位下拉：事件委托（表格整体重渲染，逐行绑定会随 innerHTML 丢失）。
+$('mdBody').addEventListener('change', ev => {
+  const sel = ev.target.closest('select.md-effort');
+  if (sel) {
+    mdSaveEffort(sel.dataset.id, sel.value);
+    return;
+  }
+  const vis = ev.target.closest('input.md-vis');
+  if (vis) mdSaveHidden(vis.dataset.id, !vis.checked);
+});
 $('btnModels').onclick = () => loadModels(true);
 
 /* ── 日志（频道：全部/任务/对话/系统） ─────────────────────────────── */
@@ -1267,6 +1346,10 @@ const CFG_MAP = {
   timeout_seconds: ['upstream', 'timeout_seconds'], header_timeout_seconds: ['upstream', 'header_timeout_seconds'],
   idle_timeout_seconds: ['upstream', 'idle_timeout_seconds'], user_agent: ['upstream', 'user_agent'],
   prompt_mode: ['prompt', 'mode'], prompt_file: ['prompt', 'file'],
+  thinking_enabled: ['thinking', 'enabled'],
+  thinking_default_effort: ['thinking', 'default_effort'],
+  thinking_client_priority: ['thinking', 'client_priority'],
+  thinking_override_scope: ['thinking', 'override_scope'],
   sanitize_blacklist_fingerprints: ['features', 'sanitize_blacklist_fingerprints'],
   session_sticky_enabled: ['session_sticky', 'enabled'],
   request_client_info: ['logging', 'request_client_info'],
@@ -1309,6 +1392,7 @@ async function loadConfig() {
       else if (Array.isArray(v)) el.value = v.join(', ');
       else el.value = v == null ? '' : v;
     }
+    syncThinkingPriorityUi(); // 下拉回显跟随 checkbox 的真实值
     markDurationFields(); // 回填后重置校验态（清掉残留红框；现值来自后端必然合法）
     $('cfgKey').disabled = !!d.api_key_env_managed;
     $('cfgKey').title = d.api_key_env_managed ? '访问密钥由启动环境变量设置，请在部署配置中修改。' : '';
@@ -1336,6 +1420,18 @@ function collectConfig() {
   }
   return out;
 }
+
+/* 优先模式在界面上是下拉（客户端优先/网关优先），配置里仍是布尔
+ * thinking.client_priority：下拉只负责改写隐藏 checkbox，保存通路不变。
+ * 这样 collectConfig / Go 侧 schema / 已有配置文件都不用迁移。 */
+function syncThinkingPriorityUi() {
+  const ui = $('thinkingPriorityUi'), cb = $('thinkingClientPriority');
+  if (ui && cb) ui.value = cb.checked ? 'client' : 'gateway';
+}
+if ($('thinkingPriorityUi')) $('thinkingPriorityUi').onchange = () => {
+  const cb = $('thinkingClientPriority');
+  if (cb) cb.checked = $('thinkingPriorityUi').value === 'client';
+};
 /* Go 时长字段即时校验：空 = 沿用现值（collectConfig 跳过发送）；非空必须是
    ParseDuration 语法（30m / 2h / 600s / 1h30m，可组合可带小数）。与后端
    config.go normalize() 的 time.ParseDuration 同口径，脏值在前端就地标红，

@@ -1332,21 +1332,45 @@ func TestModelsDynamic(t *testing.T) {
 			if mm["max_output_tokens"].(float64) != 8192 {
 				t.Errorf("dyn-model-a max_output_tokens=%v want 8192", mm["max_output_tokens"])
 			}
-			// reasoning 档位透出：supported_efforts + default_effort
-			efforts, _ := mm["supported_efforts"].([]any)
+			// 能力声明：reasoning_supported_efforts + 策略生效默认档；策略未启用时
+			// reasoning_default_effort 沿用上游默认档（medium）。
+			efforts, _ := mm["reasoning_supported_efforts"].([]any)
 			if len(efforts) != 3 || efforts[0] != "low" {
-				t.Errorf("dyn-model-a supported_efforts=%v", mm["supported_efforts"])
+				t.Errorf("dyn-model-a reasoning_supported_efforts=%v", mm["reasoning_supported_efforts"])
 			}
-			if mm["default_effort"] != "medium" {
-				t.Errorf("dyn-model-a default_effort=%v want medium", mm["default_effort"])
+			if mm["reasoning_default_effort"] != "medium" {
+				t.Errorf("dyn-model-a reasoning_default_effort=%v want medium", mm["reasoning_default_effort"])
+			}
+			if mm["reasoning_upstream_default_effort"] != "medium" {
+				t.Errorf("dyn-model-a reasoning_upstream_default_effort=%v want medium", mm["reasoning_upstream_default_effort"])
+			}
+			if opts, _ := mm["reasoning_options"].([]any); len(opts) != 1 {
+				t.Errorf("dyn-model-a reasoning_options=%v want 1 entry", mm["reasoning_options"])
+			}
+			if mm["supports_reasoning"] != true {
+				t.Errorf("dyn-model-a supports_reasoning=%v want true", mm["supports_reasoning"])
+			}
+			// 通用别名（客户端自动发现用）：context_window / max_input_tokens /
+			// max_completion_tokens；无图片能力时模态为 text 单模态。
+			if mm["context_window"].(float64) != 65536 || mm["max_input_tokens"].(float64) != 65536 {
+				t.Errorf("dyn-model-a context aliases=%v/%v want 65536", mm["context_window"], mm["max_input_tokens"])
+			}
+			if mm["max_completion_tokens"].(float64) != 8192 {
+				t.Errorf("dyn-model-a max_completion_tokens=%v want 8192", mm["max_completion_tokens"])
+			}
+			if mods, _ := mm["input_modalities"].([]any); len(mods) != 1 || mods[0] != "text" {
+				t.Errorf("dyn-model-a input_modalities=%v want [text]", mm["input_modalities"])
 			}
 		case "dyn-model-b":
-			// 上游未返回 reasoning → 两个档位字段都省略（客户端按自身默认）
-			if _, has := mm["supported_efforts"]; has {
-				t.Errorf("dyn-model-b supported_efforts should be omitted, got %v", mm["supported_efforts"])
+			// 上游未返回 reasoning → 档位字段全部省略（客户端按自身默认）
+			if _, has := mm["reasoning_supported_efforts"]; has {
+				t.Errorf("dyn-model-b reasoning_supported_efforts should be omitted, got %v", mm["reasoning_supported_efforts"])
 			}
-			if _, has := mm["default_effort"]; has {
-				t.Errorf("dyn-model-b default_effort should be omitted")
+			if _, has := mm["reasoning_default_effort"]; has {
+				t.Errorf("dyn-model-b reasoning_default_effort should be omitted")
+			}
+			if _, has := mm["reasoning_options"]; has {
+				t.Errorf("dyn-model-b reasoning_options should be omitted")
 			}
 		case "glm-9.9":
 			if mm["context_length"].(float64) != 262144 {
