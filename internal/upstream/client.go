@@ -803,6 +803,11 @@ type Client struct {
 	// 面板保存配置热改 + chat 热路径并发读写，用 atomic.Bool 消除数据竞争。
 	SanitizeFingerprints atomic.Bool
 
+	// effortPolicy 网关档位策略（配置节 thinking，见 effort_policy.go）：缺档补
+	// 默认档 / 客户端优先 / scope=all 覆盖关闭意图。面板保存配置热改 + chat 热
+	// 路径并发读写，用 atomic.Pointer 整体替换，读侧拿到的永远是一份完整快照。
+	effortPolicy atomic.Pointer[EffortPolicy]
+
 	// UserAgent 出站 User-Agent 显式覆盖（非空时全路径生效，优先于默认三段式）。
 	// 空 = 默认官方形态：chat/refresh/FetchModels 走
 	// `WorkBuddy/<ver> WorkBuddy/<ver> CLI/<cliVer>`；billing 走 `WorkBuddy/<ver>`
@@ -958,23 +963,40 @@ func (c *Client) chatBase(a *auth.Auth) string {
 }
 
 // prepareBody 组装出站请求体（脱敏开关由 Client.SanitizeFingerprints 控制）。
-// prepareBody 组装出站请求体（脱敏开关由 Client.SanitizeFingerprints 控制）。
 // realm 为账号 Realm()（cn/global），供 efforts 缓存分桶（跨域 effort 集合不互相污染）。
 // 返回改写后的请求体与本次实际生效的思考档位（见 normalizeReasoningEffort）。
 func (c *Client) prepareBody(body []byte, realm, uid, conversationID string) ([]byte, string) {
-	efforts, defs := c.effortsSnapshot(realm), c.defaultEffortsSnapshot(realm)
+	// 降级/补档数据源 = 本 realm 静态兜底表为基、远端探测桶按模型覆盖（同源规则
+	// 见 requestEffortMap）。CN 此前只吃远端桶：探测正常时无差别，但探测失败或冷
+	// 启动时静态表里的档位约束会丢；两域统一后 /v1/models 的声明与请求侧校验同源。
+	efforts, defs := requestEffortMap(realm, c.effortsSnapshot(realm), c.defaultEffortsSnapshot(realm))
 	maxOut := c.modelMaxOutSnapshot(realm)
-	if realmKey(realm) == "global" {
-		// global 域降级源 = 远端探测桶（权威）∪ 产品静态兜底表（全局 21 名内档位如
-		// deepseek-v4.1-flash ['high']）。当前探测桶为空时也按静态表降级，不全程透传
-		//（issue #84：往 WorkBuddy 上游发 low/max 非法，须降级到 high）。
-		efforts, defs = globalEffortMap(efforts, defs)
-	}
 	// prompt_cache_key 注入（P0 费用优化，费用降 ~17×）：按账号隔离的稳定缓存键，
 	// 让同一客户端对同一账号的连续请求命中上游前缀缓存。与 body 归一化共用
 	// prepareBodyOpt 的同一次 map 解析，不再二次 Unmarshal/Marshal。
-	body, effort := prepareBodyOpt(body, c.SanitizeFingerprints.Load(), efforts, defs, maxOut, uid, conversationID, true)
+	body, effort := prepareBodyOpt(body, c.SanitizeFingerprints.Load(), efforts, defs, maxOut, uid, conversationID, true, c.EffortPolicySnapshot())
 	return body, effort
+}
+
+// SetEffortPolicy 热更新网关档位策略；nil 或 Enabled=false 等价于不介入。
+func (c *Client) SetEffortPolicy(p *EffortPolicy) {
+	if p == nil {
+		c.effortPolicy.Store(nil)
+		return
+	}
+	cp := p.normalized()
+	c.effortPolicy.Store(&cp)
+}
+
+// EffortPolicySnapshot 返回当前档位策略快照；nil 表示未启用或未配置。
+// 返回副本而不是内部指针：调用方改快照字段不会污染热更新中的共享策略。
+func (c *Client) EffortPolicySnapshot() *EffortPolicy {
+	p := c.effortPolicy.Load()
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	return &cp
 }
 
 // effortsSnapshot 返回 effort 能力缓存副本；nil 表示未知（透传不降级）。

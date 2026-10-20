@@ -66,12 +66,19 @@ func normalizeModelName(obj map[string]any) {
 // 导出入口不注入 prompt_cache_key（保持既有公开语义）；生产路径由
 // client.prepareBody 调用 prepareBodyOpt 并传入 cache 参数。
 func PrepareBodyOptWithEffortsDefaultAndCaps(src []byte, sanitize bool, efforts map[string][]string, defaultEfforts map[string]string, maxOut map[string]int64) ([]byte, string) {
-	return prepareBodyOpt(src, sanitize, efforts, defaultEfforts, maxOut, "", "", false)
+	return prepareBodyOpt(src, sanitize, efforts, defaultEfforts, maxOut, "", "", false, nil)
+}
+
+// PrepareBodyOptWithEffortPolicy 在 …Caps 之上接入网关档位策略（配置节 thinking）：
+// 客户端缺档按默认档补齐、按优先级决定客户端/网关谁生效、scope=all 时可覆盖客户端
+// 显式关闭。policy 为 nil 或 Enabled=false 时与 …Caps 完全一致。
+func PrepareBodyOptWithEffortPolicy(src []byte, sanitize bool, efforts map[string][]string, defaultEfforts map[string]string, maxOut map[string]int64, policy *EffortPolicy) ([]byte, string) {
+	return prepareBodyOpt(src, sanitize, efforts, defaultEfforts, maxOut, "", "", false, policy)
 }
 
 // prepareBodyOpt 是完整管线：injectCache=true 时在同一次 map 解析里注入
 // prompt_cache_key（优先级见 promptCacheKeyFor），避免二次 Unmarshal/Marshal。
-func prepareBodyOpt(src []byte, sanitize bool, efforts map[string][]string, defaultEfforts map[string]string, maxOut map[string]int64, cacheUID, cacheConversation string, injectCache bool) ([]byte, string) {
+func prepareBodyOpt(src []byte, sanitize bool, efforts map[string][]string, defaultEfforts map[string]string, maxOut map[string]int64, cacheUID, cacheConversation string, injectCache bool, policy *EffortPolicy) ([]byte, string) {
 	if len(src) == 0 {
 		return src, ""
 	}
@@ -124,6 +131,12 @@ func prepareBodyOpt(src []byte, sanitize bool, efforts map[string][]string, defa
 	// 先于 normalizeReasoningEffort 执行：补入的默认档也要走既有降级管线，
 	// 模型不支持默认档时自动落到 ≤ 默认档的最高支持档（不出站不合规档位）。
 	modelName, _ := obj["model"].(string)
+	// 网关档位策略（配置 thinking，见 effort_policy.go）在 injectThinking 之前决定
+	// 生效档位：缺档补齐 / 客户端优先或网关优先 / scope=all 覆盖关闭意图。
+	// injectThinking 只补 deepseek 的默认档，normalizeReasoningEffort 只负责降级，
+	// 两者都不处理「客户端缺档/优先级」，所以策略必须单独一步且排在它们前面，
+	// 否则 normalize 会先看到「客户端没带档位」直接透传、策略补的档位就漏了。
+	applyEffortPolicy(obj, modelName, efforts, policy)
 	injectThinking(obj, lookupDefaultEffort(defaultEfforts, modelName))
 	effort := normalizeReasoningEffort(obj, efforts, defaultEfforts)
 	// DeepSeek 多轮一致性：assistant 消息带 reasoning 痕迹时回填 reasoning_content
