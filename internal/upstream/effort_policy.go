@@ -7,9 +7,9 @@ import "strings"
 // 目标语义（与 README / 面板文案一致）：
 //   - 客户端没带档位：无论谁优先，都由网关补齐生效档位；
 //   - 客户端带了档位：ClientPriority=true 时客户端优先，false 时网关优先；
-//   - 客户端显式关闭思考：reasoning_effort=off/none 属于档位字段，网关优先时照常
-//     覆盖；thinking.type=disabled 属于开关，OverrideScope=level 尊重客户端关闭，
-//     OverrideScope=all 才连开关一起覆盖（仅改请求里已有的 thinking 对象）。
+//   - 客户端显式关闭思考：thinking.type=disabled 与 reasoning_effort=off/none 都算
+//     关闭意图。客户端优先、或网关优先且 OverrideScope=level 时尊重关闭（清掉档位，
+//     deepseek 补 thinking.type=disabled）；OverrideScope=all 才连开关一起翻开。
 //
 // 生效档位由 ResolveGatewayEffort 计算：DefaultEffort 为空或 "max" 取模型声明档位
 // 里的最高档，具体档位不在声明内时同样退化为最高档。
@@ -82,6 +82,21 @@ func thinkingDisabled(obj map[string]any) bool {
 	return strings.EqualFold(strings.TrimSpace(typ), "disabled")
 }
 
+// honorClose 尊重客户端关闭思考：清掉 off/none 这类非法档位值；deepseek 额外写
+// thinking.type=disabled（该域唯一能落地的关闭形态），避免 injectThinking 又把默认档补回来。
+func honorClose(obj map[string]any, model string) {
+	delete(obj, "reasoning_effort")
+	delete(obj, "reasoningEffort")
+	if !isDeepSeekModel(model) {
+		return
+	}
+	if t, ok := obj["thinking"].(map[string]any); ok {
+		t["type"] = "disabled"
+		return
+	}
+	obj["thinking"] = map[string]any{"type": "disabled"}
+}
+
 // applyEffortPolicy 按网关策略写入生效档位。必须在 injectThinking /
 // normalizeReasoningEffort 之前调用：前者只补 deepseek 的默认档、后者只管降级，
 // 都不负责「客户端缺档/优先级/覆盖关闭」这三类决定。
@@ -106,22 +121,17 @@ func applyEffortPolicy(obj map[string]any, model string, efforts map[string][]st
 	off := present && isEffortOff(current)
 	disabled := thinkingDisabled(obj)
 
-	// 客户端表达关闭：开关优先于档位。
+	// 客户端表达关闭：客户端优先、或网关优先但只覆盖档位（level）时尊重它。
+	// 只有「网关优先 + all」才连开关一起翻开。
 	if off || disabled {
-		if p.ClientPriority {
+		if p.ClientPriority || p.OverrideScope != OverrideScopeAll {
+			honorClose(obj, model)
 			return
 		}
-		// thinking.type=disabled 是开关意图：scope=level 时不碰它（也不补档），
-		// 只有 scope=all 才连开关一起覆盖。reasoning_effort=off 属于档位字段，
-		// 网关优先时照常覆盖（scope 不影响它）。
-		if disabled && p.OverrideScope != OverrideScopeAll {
-			return
-		}
-		if disabled {
-			// 只翻转请求里已有的 thinking 对象，不凭空新增（非 deepseek 上游可能不认）。
-			if t, ok := obj["thinking"].(map[string]any); ok {
-				t["type"] = "enabled"
-			}
+		// all：只翻转请求里已有的 thinking 对象，不凭空新增（非 deepseek 上游可能不认）；
+		// deepseek 缺 thinking 时由 injectThinking 负责补 enabled。
+		if t, ok := obj["thinking"].(map[string]any); ok {
+			t["type"] = "enabled"
 		}
 		if key == "" {
 			key = "reasoning_effort"

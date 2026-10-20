@@ -164,14 +164,26 @@ func TestEffortPolicyMatrix(t *testing.T) {
 			policy: on(false, OverrideScopeLevel), wantKey: "reasoningEffort", wantVal: "max",
 		},
 		{
-			name: "off + 客户端优先 → 保持客户端语义（既有降级落到最低档）", body: `{"model":"demo","reasoning_effort":"off","messages":[]}`,
-			policy: on(true, OverrideScopeLevel), wantKey: "reasoning_effort", wantVal: "low",
+			name: "off + 客户端优先 → 尊重关闭，不补档", body: `{"model":"demo","reasoning_effort":"off","messages":[]}`,
+			policy: on(true, OverrideScopeLevel), wantNoEff: true,
 		},
 		{
-			// scope=level 只覆盖档位、不覆盖开关，但 off 本身是客户端显式档位：
-			// 网关优先会覆盖它；off 不在声明档位内，normalize 再落到最低档。
-			name: "off + 网关优先 scope=level → 覆盖为最高档", body: `{"model":"demo","reasoning_effort":"off","messages":[]}`,
-			policy: on(false, OverrideScopeLevel), wantKey: "reasoning_effort", wantVal: "max",
+			// off 是档位形态的关闭意图：scope=level 只覆盖档位、不覆盖开关，
+			// 因此与 thinking.type=disabled 同样被尊重。
+			name: "off + 网关优先 scope=level → 尊重关闭，不补档", body: `{"model":"demo","reasoning_effort":"off","messages":[]}`,
+			policy: on(false, OverrideScopeLevel), wantNoEff: true,
+		},
+		{
+			name: "off + 网关优先 scope=all → 翻开并补档", body: `{"model":"demo","reasoning_effort":"off","messages":[]}`,
+			policy: on(false, OverrideScopeAll), wantKey: "reasoning_effort", wantVal: "max",
+		},
+		{
+			name: "deepseek off + 客户端优先 → thinking 落 disabled、无档位", body: `{"model":"deepseek-v4.1-flash","reasoning_effort":"off","messages":[]}`,
+			policy: on(true, OverrideScopeLevel), wantNoEff: true, wantThink: "disabled",
+		},
+		{
+			name: "deepseek off + 网关优先 scope=all → 翻开并补档", body: `{"model":"deepseek-v4.1-flash","reasoning_effort":"off","messages":[]}`,
+			policy: on(false, OverrideScopeAll), wantKey: "reasoning_effort", wantVal: "max", wantThink: "enabled",
 		},
 		{
 			name: "thinking disabled + 客户端优先 → 尊重关闭", body: `{"model":"demo","thinking":{"type":"disabled"},"messages":[]}`,

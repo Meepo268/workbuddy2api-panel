@@ -790,7 +790,7 @@ http://127.0.0.1:7863/panel/
 
 上游只给单一 `reasoning.effort`、不给 `supportedEfforts` 的模型，声明为**单档列表**（档位 = 该值），不再退化成“无档位”。
 
-**优先级规则**（由 `thinking.*` 控制）：客户端带档位时，`client_priority=true` 原样保留（仅当模型不认该档时按既有 nearest 逻辑归一到最近可用档）；`client_priority=false` 用 `default_effort` 覆盖。客户端不带档位时恒补默认档。目标档解析统一走“≤ 目标档的最高可用档，否则最低可用档”，绝不把上游不认的档发出去。`override_scope=level` 时客户端 `thinking.type=disabled` / `reasoning_effort=off` 视为显式关闭，网关优先也不翻开关；`all` 时才连开关一起覆盖（`thinking.type` → `enabled`）。
+**优先级规则**（由 `thinking.*` 控制）：客户端带合法档位时，`client_priority=true` 原样保留（仅当模型不认该档时按既有 nearest 逻辑归一到最近可用档）；`client_priority=false` 用 `default_effort` 覆盖。客户端不带档位时恒补默认档。`reasoning_effort=off/none` 与 `thinking.type=disabled` 都算**显式关闭**：客户端优先时尊重；网关优先时只有 `override_scope=all` 才连开关一起翻开，`level` 仍然尊重（deepseek 落成 `thinking.type=disabled`，其余模型清掉档位字段）。目标档解析统一走“≤ 目标档的最高可用档，否则最低可用档”，绝不把上游不认的档发出去。
 
 ### 流式行为细节
 
