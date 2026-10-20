@@ -1,6 +1,8 @@
 package server
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
@@ -66,6 +68,22 @@ func TestApplyReasoningListingPolicy(t *testing.T) {
 	}
 	if entry["supports_reasoning"] != true {
 		t.Errorf("supports_reasoning 应为 true")
+	}
+
+	// JSON 形状：档位列表 + OpenRouter/models.dev 风格 reasoning_options。
+	raw, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"reasoning_supported_efforts":["low","medium","high"]`,
+		`"reasoning_options":[{"type":"effort","values":["low","medium","high"]}]`,
+		`"reasoning_default_effort":"high"`,
+		`"reasoning_upstream_default_effort":"medium"`,
+	} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("JSON 缺 %s：%s", want, raw)
+		}
 	}
 }
 
