@@ -19,6 +19,24 @@ func TestThinkingDefaults(t *testing.T) {
 	}
 }
 
+// TestThinkingMissingSectionUsesDefaults 旧配置文件（v1.13.0 及更早）没有 thinking
+// 节：Load 必须落到默认策略，而不是静默关闭补档或退化成网关优先——「复制旧配置
+// 导致客户端优先不生效」的排查路径因此不成立。
+func TestThinkingMissingSectionUsesDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"listen":":7001","api_key":"sk-test"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Thinking.Enabled || c.Thinking.DefaultEffort != "max" || !c.Thinking.ClientPriority || c.Thinking.OverrideScope != "level" {
+		t.Fatalf("缺少 thinking 节时=%+v，want 默认 enabled/max/client_priority/level", c.Thinking)
+	}
+}
+
 func TestThinkingParsedAndNormalized(t *testing.T) {
 	c, err := ParseConfig([]byte(`{"thinking":{"enabled":false,"default_effort":" HIGH ","client_priority":false,"override_scope":" ALL "}}`))
 	if err != nil {
