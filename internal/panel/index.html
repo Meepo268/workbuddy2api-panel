@@ -313,6 +313,11 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
 .switch.inline { justify-content: flex-start; gap: 10px; }
 .switch.inline .hint { margin-left: 2px; }
 .switch .lb { font-size: 13.5px; }
+/* 模型「下游可见」开关：隐藏的行仍留在列表里（否则关掉就找不回来了），
+   用划线 + 降透明度提示它当前不对外暴露。 */
+tr.md-hidden .who { opacity: .62; }
+tr.md-hidden .who .mid { text-decoration: line-through; }
+td .switch.inline { padding: 0; }
 .savebar {
   display: flex; align-items: center; gap: 12px; padding: 13px 17px;
   border-top: 1px solid var(--line-soft); background: var(--surface-2);
@@ -879,7 +884,7 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
         </div>
         <div class="tbl-wrap">
         <table class="acc md">
-          <thead><tr><th class="mark" aria-hidden="true"></th><th>模型</th><th>积分倍率</th><th>上游默认档</th><th>网关生效档</th><th>支持的思考档位</th><th>上下文长度</th><th>最大输出</th></tr></thead>
+          <thead><tr><th class="mark" aria-hidden="true"></th><th>模型</th><th>积分倍率</th><th>上游默认档</th><th>网关生效档</th><th>支持的思考档位</th><th>上下文长度</th><th>最大输出</th><th>下游可见</th></tr></thead>
           <tbody id="mdBody"></tbody>
         </table>
         </div>

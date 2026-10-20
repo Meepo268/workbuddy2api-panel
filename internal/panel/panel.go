@@ -187,6 +187,7 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/credit_history", p.withAuth(p.creditHistory))
 	p.mux.HandleFunc("GET /panel/api/models", p.withAuth(p.models))
 	p.mux.HandleFunc("POST /panel/api/models/thinking", p.withAuth(p.modelThinking))
+	p.mux.HandleFunc("POST /panel/api/models/hidden", p.withAuth(p.modelHiddenToggle))
 	p.mux.HandleFunc("POST /panel/api/login/start", p.withAuth(p.loginStart))
 	p.mux.HandleFunc("GET /panel/api/login/poll", p.withAuth(p.loginPoll))
 	p.mux.HandleFunc("GET /panel/api/login/regions", p.withAuth(p.loginRegions))
@@ -614,6 +615,9 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "没有可用账号：请先在面板添加账号再查询")
 		return
 	}
+	// 下游可见性标记来自 models.hidden（与 /v1/models 同一份归一化名单）；列表本身
+	// 不过滤，隐藏的模型也要在这里显示出来才能重新打开。
+	p.applyHiddenFlags(out)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":     true,
 		"models": out,

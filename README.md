@@ -403,7 +403,7 @@ curl -s http://localhost:7863/v1/responses \
 | `upstream.idle_timeout_seconds` | `300` | 聊天流中空闲上限（活跃续命，静默断流） |
 | `upstream.user_agent` | 空 | 出站 User-Agent 覆盖（空 = 现状 `CLI/2.63.2 CodeBuddy/2.63.2`）。官网「使用端」列按出站 UA 服务端归因；官方 WorkBuddy 桌面 UA 为 `WorkBuddy/<version>`，需要时可配 |
 | `features.sanitize_blacklist_fingerprints` | `true` | 出站请求体黑名单指纹脱敏 |
-| `models.hidden` | `[]` | 模型黑名单：`["deepseek-pro"]` 裸名隐藏两域，`["cn:legacy-model"]` / `["global:x"]` 只隐藏该域。**列表不列 + 点名调用直接拒绝**（`/v1/models` 过滤、`/v1/chat/completions` 与 `/v1/images/*` 拒绝）——只藏列表不够，知道名字仍可硬调。面板「模型黑名单」（逗号分隔）保存后**热生效** |
+| `models.hidden` | `[]` | 模型黑名单：`["deepseek-pro"]` 裸名隐藏两域，`["cn:legacy-model"]` / `["global:x"]` 只隐藏该域。**列表不列 + 点名调用直接拒绝**（`/v1/models` 过滤、`/v1/chat/completions` 与 `/v1/images/*` 拒绝）——只藏列表不够，知道名字仍可硬调。面板「模型黑名单」（逗号分隔）或「模型能力」页每行的「下游可见」开关保存后**热生效**，两处写同一份名单 |
 | `thinking.enabled` | `true` | 网关思考档位策略总开关：`true` 时按下面三项补档/覆盖；`false` 完全交给客户端（沿用既有档位归一）。保存后**热生效** |
 | `thinking.default_effort` | `max` | 客户端请求没带 `reasoning_effort` 时补这一档：`off/minimal/low/medium/high/xhigh/max`。`max` = 取**该模型声明档位里的最高档**；模型不支持该档时退化为其最高档，绝不发上游不认的档。保存后**热生效** |
 | `thinking.client_priority` | `true` | `true` = 客户端显式档位优先（只补缺省）；`false` = **网关优先**，用默认档覆盖客户端显式档位。保存后**热生效** |
@@ -794,6 +794,8 @@ http://127.0.0.1:7863/panel/
 **优先级规则**（由 `thinking.*` 控制）：客户端带合法档位时，`client_priority=true` 原样保留（仅当模型不认该档时按既有 nearest 逻辑归一到最近可用档）；`client_priority=false` 用 `default_effort` 覆盖。客户端不带档位时恒补默认档。`reasoning_effort=off/none` 与 `thinking.type=disabled` 都算**显式关闭**：客户端优先时尊重；网关优先时只有 `override_scope=all` 才连开关一起翻开，`level` 仍然尊重（deepseek 落成 `thinking.type=disabled`，其余模型清掉档位字段）。目标档解析统一走“≤ 目标档的最高可用档，否则最低可用档”，绝不把上游不认的档发出去。
 
 **每模型默认档**：面板「模型能力」页每行两个档位列——「上游默认档」（目录声明的值，灰）与「网关生效档」（下拉：`继承全局 · <有效档>` + 该模型声明档位，选中即写 `thinking.model_defaults`，保存热生效）。`/v1/models` 的 `reasoning_default_effort` 与面板「网关生效档」同源（同一份策略解析），`reasoning_upstream_default_effort` 保留目录原值做诊断，两者不会再出现“页面显示 high、客户端被补 max”的分裂。
+
+**下游可见**：同一张表最后一列是每模型的暴露开关，写 `models.hidden`（与配置页黑名单同一份名单），关闭后该模型立刻从 `/v1/models` 消失、点名调用也被拒绝；面板列表仍然显示它（整行划线降透明度），随时可以再打开。裸名隐藏覆盖两域，行内开关只改当前域。
 
 ### 流式行为细节
 

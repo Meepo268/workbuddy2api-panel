@@ -867,6 +867,14 @@ function mdAvailabilityTag(m) {
 // 上游模型繁忙度（/v2/chat/busy）文案：只标需要避让的三档，idle/normal 不打扰。
 const BUSY_WORDS = { busy: '繁忙', congested: '拥堵', unavailable: '不可用' };
 
+// mdVisToggle 下游可见性开关：写 models.hidden（与配置页「模型黑名单」同一份名单）。
+// 关闭 = 该模型不再出现在 /v1/models，也不能被下游调用；面板列表仍然显示它，
+// 否则关掉之后就没法在这里重新打开。
+function mdVisToggle(m) {
+  return '<label class="switch inline" title="关闭后该模型不出现在 /v1/models，也不能被下游调用（保存即热生效）">' +
+    '<input type="checkbox" class="md-vis" data-id="' + esc(m.id) + '"' + (m.hidden ? '' : ' checked') + '></label>';
+}
+
 function mdRowHtml(m, pr) {
   const eff = (m.supported_efforts || []).slice();
   if (m.can_disable_thinking && eff.length && !eff.includes('off')) eff.push('off（可关）');
@@ -887,13 +895,13 @@ function mdRowHtml(m, pr) {
   }
   const capHtml = caps.length ? '<div class="id" style="margin-top:2px">' + caps.join(' ') + '</div>' : '';
   const tip = m.description ? ' title="' + esc(m.description) + '"' : '';
-  return '<tr><td class="mark" aria-hidden="true"><i></i></td><td class="who"' + tip + '><div class="nm"><span class="mid">' + esc(m.id) + '</span>' + mdAvailabilityTag(m) + '</div><div class="id">' + esc(m.name || '') + '</div>' + capHtml + '</td>' +
+  return '<tr' + (m.hidden ? ' class="md-hidden"' : '') + '><td class="mark" aria-hidden="true"><i></i></td><td class="who"' + tip + '><div class="nm"><span class="mid">' + esc(m.id) + '</span>' + mdAvailabilityTag(m) + '</div><div class="id">' + esc(m.name || '') + '</div>' + capHtml + '</td>' +
     '<td class="num">' + rateCell(m) + '</td>' +
     '<td>' + (m.upstream_default_effort && !m.image_generation ? '<span class="tag mute">' + esc(m.upstream_default_effort) + '</span>' : '<span style="color:var(--ink-3)">—</span>') + '</td>' +
     '<td class="eff">' + mdEffortSelect(m) + '</td>' +
     '<td class="efs" style="white-space:normal">' + effs + '</td>' +
     '<td class="num">' + (m.context_length ? Math.round(m.context_length / 1000) + 'K' : '—') + '</td>' +
-    outCell(m, pr) + '</tr>';
+    outCell(m, pr) + '<td class="num">' + mdVisToggle(m) + '</td></tr>';
 }
 
 // mdEffortSelect 网关生效档下拉：「继承全局（有效档）」或该模型声明档位之一。
@@ -938,11 +946,29 @@ async function mdSaveEffort(id, effort) {
   }
 }
 
+// mdSaveHidden 行内切换下游可见性；成功后只改本地标记并重绘该视图。
+async function mdSaveHidden(id, hidden) {
+  try {
+    const d = await api('models/hidden', { method: 'POST', body: JSON.stringify({ id, hidden }) });
+    const m = mdAll.find(x => x.id === id);
+    if (m) {
+      if (hidden) m.hidden = true;
+      else delete m.hidden;
+    }
+    renderModels();
+    const need = (d.restart_required || []).length;
+    toast((hidden ? '已隐藏 ' : '已暴露 ') + id + (need ? '（' + need + ' 项需重启）' : '（已热生效）'), 'ok');
+  } catch (e) {
+    toast('保存失败：' + e.message, 'bad');
+    renderModels(); // 重绘回到服务端状态，别让勾选停在失败值
+  }
+}
+
 function renderModels() {
   const tb = $('mdBody');
   const list = mdSortList(mdAll.filter(m => mdMatch(m)));
   if (!list.length) {
-    tb.innerHTML = '<tr><td colspan="8"><div class="empty">没有符合当前筛选条件的模型</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="9"><div class="empty">没有符合当前筛选条件的模型</div></td></tr>';
   } else {
     tb.innerHTML = list.map(m => mdRowHtml(m, mdProbeOf(m.id))).join('');
   }
@@ -975,7 +1001,12 @@ $('mdReset').onclick = resetModelFilter;
 // 行内档位下拉：事件委托（表格整体重渲染，逐行绑定会随 innerHTML 丢失）。
 $('mdBody').addEventListener('change', ev => {
   const sel = ev.target.closest('select.md-effort');
-  if (sel) mdSaveEffort(sel.dataset.id, sel.value);
+  if (sel) {
+    mdSaveEffort(sel.dataset.id, sel.value);
+    return;
+  }
+  const vis = ev.target.closest('input.md-vis');
+  if (vis) mdSaveHidden(vis.dataset.id, !vis.checked);
 });
 $('btnModels').onclick = () => loadModels(true);
 
