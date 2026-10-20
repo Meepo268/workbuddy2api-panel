@@ -140,3 +140,36 @@ func TestApplyReasoningListingGlobalStaticTable(t *testing.T) {
 		t.Errorf("gpt-5.5 生效默认档=%v want xhigh（最高档）", entry["reasoning_default_effort"])
 	}
 }
+
+// TestApplyReasoningListingPerModelOverride 每模型覆盖优先于全局默认档：
+// 声明侧与出站侧读同一份 thinking.model_defaults。
+func TestApplyReasoningListingPerModelOverride(t *testing.T) {
+	policy := &upstream.EffortPolicy{
+		Enabled: true, DefaultEffort: "max", ClientPriority: true, OverrideScope: "level",
+		ModelDefaults: map[string]string{
+			"cn:demo":      "low",
+			"bare-demo":    "medium",  // 裸模型名兜底
+			"cn:inherited": "inherit", // 跟随全局 max
+		},
+	}
+	h := &Handler{cfg: Config{Upstream: testUpstreamWithPolicy(policy)}}
+	efforts := []string{"low", "medium", "high"}
+
+	entry := map[string]any{}
+	h.applyReasoningListing(entry, "cn", upstream.ModelInfo{ID: "demo", Efforts: efforts, DefaultEffort: "medium"}, efforts, "medium")
+	if entry["reasoning_default_effort"] != "low" {
+		t.Errorf("cn:demo 覆盖档=%v want low", entry["reasoning_default_effort"])
+	}
+
+	entry = map[string]any{}
+	h.applyReasoningListing(entry, "cn", upstream.ModelInfo{ID: "bare-demo", Efforts: efforts}, efforts, "")
+	if entry["reasoning_default_effort"] != "medium" {
+		t.Errorf("裸模型名覆盖档=%v want medium", entry["reasoning_default_effort"])
+	}
+
+	entry = map[string]any{}
+	h.applyReasoningListing(entry, "cn", upstream.ModelInfo{ID: "inherited", Efforts: efforts}, efforts, "")
+	if entry["reasoning_default_effort"] != "high" {
+		t.Errorf("inherit 应回落全局 max→high, got %v", entry["reasoning_default_effort"])
+	}
+}

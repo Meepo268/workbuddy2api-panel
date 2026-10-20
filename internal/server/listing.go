@@ -62,11 +62,11 @@ func (h *Handler) applyReasoningListing(entry map[string]any, realm string, mi u
 		entry["reasoning_upstream_default_effort"] = upstreamDefault
 	}
 
-	// 网关默认档 = 策略生效档（空/不支持时退化为声明最高档）；策略关闭时沿用上游默认档。
+	// 网关默认档 = 策略生效档（每模型覆盖优先，空/不支持时退化为声明最高档）；
+	// 策略关闭时沿用上游默认档。
 	effective := upstreamDefault
 	if p := h.effortPolicy(); p != nil && p.Enabled {
-		np := p.Normalized()
-		if resolved, ok := upstream.ResolveGatewayEffort(np.DefaultEffort, efforts); ok {
+		if resolved, ok := upstream.ResolveGatewayEffort(p.DefaultEffortFor(realm, mi.ID), efforts); ok {
 			effective = resolved
 		}
 	}
