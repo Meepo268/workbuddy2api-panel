@@ -45,8 +45,8 @@ var appVersion = "dev"
 var appRepository = "misakano7545/workbuddy2api-panel"
 
 // insecureKeyWarning 空 api_key = 完全不鉴权（httpauth.VerifyBearer 对空 key 恒放
-// 行），样例占位符 test_key = 人尽皆知的弱密钥；叠加非回环监听（缺省 ":7863" 绑
-// 所有网卡）等于把网关与面板 API 暴露给整个内网/公网。返回非空告警文本供启动日志
+// 行），样例占位符 test_key = 人尽皆知的弱密钥；叠加非回环监听（显式配成
+// "0.0.0.0:7863" 或 ":7863"）等于把网关与面板 API 暴露给整个内网/公网。返回非空告警文本供启动日志
 // 打印，安全状态返回空串。首启自动生成的随机 key 不会命中——这是给「照抄样例 /
 // 显式清空」的最后提醒，不阻塞启动。
 func insecureKeyWarning(listen, apiKey string) string {
@@ -269,7 +269,6 @@ func main() {
 		TravelHours:    cfg.Schedule.TravelHours,
 		ActivityHours:  cfg.Schedule.ActivityHours,
 		KeepaliveHours: cfg.Schedule.KeepaliveHours,
-		BlackcatHours:  cfg.Schedule.BlackcatHours,
 		GrowthHours:    cfg.Schedule.GrowthHours,
 		// 余额采样记录器：挂在余额刷新之后（scheduler 内），nil = 不采样。
 		Balance: bal,
@@ -279,7 +278,6 @@ func main() {
 		TravelDisabled:     !cfg.Schedule.TravelEnabled,
 		ActivityDisabled:   !cfg.Schedule.ActivityEnabled,
 		KeepaliveDisabled:  !cfg.Schedule.KeepaliveEnabled,
-		BlackcatDisabled:   !cfg.Schedule.BlackcatEnabled,
 		GrowthDisabled:     !cfg.Schedule.GrowthEnabled,
 		// 周期保活只刷新临期凭证（默认 7 天窗口）；面板手动全量保活不受影响。
 		KeepaliveRefreshWindow: cfg.KeepaliveRefreshWindowDur,
@@ -316,12 +314,6 @@ func main() {
 		log.Printf("token 保活已启用：%v 点", cfg.Schedule.KeepaliveHours)
 	}
 	switch {
-	case !cfg.Schedule.BlackcatEnabled:
-		log.Printf("夜猫子已禁用（schedule.blackcat_enabled=false）")
-	default:
-		log.Printf("夜猫子已启用：%v 点（23:00–08:00 窗口 glm-5.2 对话补足）", cfg.Schedule.BlackcatHours)
-	}
-	switch {
 	case !cfg.Schedule.GrowthEnabled:
 		log.Printf("成长任务队列已禁用（schedule.growth_enabled=false）")
 	default:
@@ -350,9 +342,6 @@ func main() {
 	if cfg.Schedule.BalanceRefreshJitterPermill > 0 {
 		log.Printf("周期抖动（人味化）：余额刷新 ±%d‰（账号遍历同步摊开）、补领清扫 ±%d‰，不再精确固定间隔（schedule.*_jitter_permill）",
 			cfg.Schedule.BalanceRefreshJitterPermill, cfg.Schedule.TaskSweepJitterPermill)
-	}
-	if cfg.Schedule.NightAccountCap > 0 {
-		log.Printf("夜间参与上限：夜猫子只让积分最高的前 %d 个号参加（schedule.night_account_cap）", cfg.Schedule.NightAccountCap)
 	}
 	if cfg.Schedule.IncludeDisabledInTasks {
 		log.Printf("保号任务覆盖禁用账号（schedule.include_disabled_in_tasks=true）：禁用号仍签到 / 活跃 / 保活 / 刷新余额，但不参与选号")
@@ -542,7 +531,6 @@ func main() {
 	pn.ResumeTaskJobs()
 	go sch.Run(ctx)
 	sch.SetJitter(cfg.Schedule.BalanceRefreshJitterPermill, cfg.Schedule.TaskSweepJitterPermill)
-	sch.SetNightAccountCap(cfg.Schedule.NightAccountCap)
 	sch.SetMakeupCardsPerRound(cfg.Schedule.MakeupCardsPerRound)
 	sch.StartBalanceRefresh(ctx, cfg.BalanceRefreshInterval)
 	sch.StartTaskSweep(ctx, cfg.TaskSweepInterval)
@@ -566,6 +554,15 @@ func main() {
 		// 排程轮次结果汇总的推送出口（告警 webhook 同一条管道；未启用则只落面板日志）。
 		pn.SetNotifier(mon.Notify)
 		log.Printf("alerting: webhook on, every %ds", cfg.Alerting.IntervalSeconds)
+		// 上游目录改版监控也走这条管道（未启用告警时只写日志，见下方 watchdog 段）。
+		if cfg.Watchdog.Enabled {
+			go gw.WatchCatalog(ctx, time.Duration(cfg.Watchdog.IntervalSeconds)*time.Second, mon.Notify)
+			log.Printf("watchdog: 上游目录监控开，每 %ds", cfg.Watchdog.IntervalSeconds)
+		}
+	} else if cfg.Watchdog.Enabled {
+		// 没有 webhook 也要能开：变化只写日志（面板任务日志里能翻到）。
+		go gw.WatchCatalog(ctx, time.Duration(cfg.Watchdog.IntervalSeconds)*time.Second, nil)
+		log.Printf("watchdog: 上游目录监控开（未配置 alerting，仅写日志），每 %ds", cfg.Watchdog.IntervalSeconds)
 	}
 
 	// 启动即预热模型积分倍率表：倍率只在 FetchModels/FetchGlobalModelInfos 成功时
@@ -839,6 +836,7 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 		ThinkingClientPriority: newCfg.Thinking.ClientPriority,
 		ThinkingOverrideScope:  newCfg.Thinking.OverrideScope,
 		ThinkingModelDefaults:  newCfg.Thinking.ModelDefaults,
+		ModelFallback:          newCfg.Pool.ModelFallback,
 	})
 	up.SanitizeFingerprints.Store(newCfg.Features.SanitizeBlacklistFingerprints)
 	up.SanitizeBrandScope.Store(newCfg.Features.SanitizeBrandScope)
@@ -864,14 +862,12 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 		TravelHours:    newCfg.Schedule.TravelHours,
 		ActivityHours:  newCfg.Schedule.ActivityHours,
 		KeepaliveHours: newCfg.Schedule.KeepaliveHours,
-		BlackcatHours:  newCfg.Schedule.BlackcatHours,
 		GrowthHours:    newCfg.Schedule.GrowthHours,
 
 		CheckinDisabled:        !newCfg.Schedule.CheckinEnabled,
 		TravelDisabled:         !newCfg.Schedule.TravelEnabled,
 		ActivityDisabled:       !newCfg.Schedule.ActivityEnabled,
 		KeepaliveDisabled:      !newCfg.Schedule.KeepaliveEnabled,
-		BlackcatDisabled:       !newCfg.Schedule.BlackcatEnabled,
 		GrowthDisabled:         !newCfg.Schedule.GrowthEnabled,
 		IncludeDisabledInTasks: newCfg.Schedule.IncludeDisabledInTasks,
 
@@ -882,7 +878,6 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	sch.SetBalanceInterval(newCfg.BalanceRefreshInterval)
 	sch.SetTaskSweepInterval(newCfg.TaskSweepInterval)
 	sch.SetJitter(newCfg.Schedule.BalanceRefreshJitterPermill, newCfg.Schedule.TaskSweepJitterPermill)
-	sch.SetNightAccountCap(newCfg.Schedule.NightAccountCap)
 	sch.SetMakeupCardsPerRound(newCfg.Schedule.MakeupCardsPerRound)
 	if pn != nil {
 		pn.SetGrowthConcurrency(newCfg.Schedule.GrowthConcurrency) // 排程轮次并发热生效
@@ -895,11 +890,14 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	return restartRequiredFields(baseline, newCfg), nil
 }
 
-// applyCNChatBase 把 config cn.chat_base 装配进上游 client；空则保留内置默认，
-// 老配置（无 cn 段）行为不变。
+// applyCNChatBase 把 config cn.chat_base / cn.billing_base 装配进上游 client；
+// 空则保留内置默认，老配置（无 cn 段）行为不变。
 func applyCNChatBase(up *upstream.Client, cfg *Config) {
 	if cfg.CN.ChatBase != "" {
 		up.ChatBaseCN = cfg.CN.ChatBase
+	}
+	if cfg.CN.BillingBase != "" {
+		up.BillingBaseCN = cfg.CN.BillingBase
 	}
 }
 
@@ -927,8 +925,9 @@ func restartRequiredFields(current, next *Config) []string {
 	changed("upstream.device_token", current.Upstream.DeviceToken, next.Upstream.DeviceToken)
 	changed("upstream.device_token_file", current.Upstream.DeviceTokenFile, next.Upstream.DeviceTokenFile)
 	changed("upstream.passthrough_ip", current.Upstream.PassthroughIP, next.Upstream.PassthroughIP)
-	// cn.chat_base 同样只在装配期写进 up.ChatBaseCN（请求路径并发读取，不做热改）。
+	// cn.chat_base / cn.billing_base 同样只在装配期写进上游 client（请求路径并发读取，不做热改）。
 	changed("cn.chat_base", current.CN.ChatBase, next.CN.ChatBase)
+	changed("cn.billing_base", current.CN.BillingBase, next.CN.BillingBase)
 	changed("global.enabled", current.Global.Enabled, next.Global.Enabled)
 	changed("global.chat_base", current.Global.ChatBase, next.Global.ChatBase)
 	changed("global.billing_base", current.Global.BillingBase, next.Global.BillingBase)

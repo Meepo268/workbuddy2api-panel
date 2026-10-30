@@ -1,5 +1,5 @@
 {
-  "listen": ":7863",
+  "listen": "127.0.0.1:7863",
   "api_key": "test_key",
   "auth_dir": "./auths",
   "state_file": "./data/state.json",
@@ -32,13 +32,11 @@
     "activity_hours": [10],
     "keepalive_hours": [22],
     "keepalive_refresh_window": "168h",
-    "blackcat_hours": [23],
     "growth_hours": [11],
     "checkin_enabled": true,
     "travel_enabled": true,
     "activity_enabled": true,
     "keepalive_enabled": true,
-    "blackcat_enabled": true,
     "growth_enabled": true,
     "growth_concurrency": 1,
     "jitter_minutes": 0,
@@ -49,8 +47,7 @@
     "include_disabled_in_tasks": false,
     "balance_refresh_jitter_permill": 0,
     "task_sweep_jitter_permill": 0,
-    "makeup_cards_per_round": 0,
-    "night_account_cap": 0
+    "makeup_cards_per_round": 0
   },
   "global": {
     "enabled": true,
@@ -137,5 +134,10 @@
     "webhook_url": "",
     "min_healthy_cn": 1,
     "min_healthy_global": 0
+  },
+  "watchdog": {
+    "_comment": "上游目录改版监控：定期对 /v1/models 结果取指纹，模型新增/下线或能力字段变动时经 alerting.webhook_url 通知。默认关闭——只在想第一时间知道上游改了目录时开。",
+    "enabled": false,
+    "interval_seconds": 3600
   }
 }

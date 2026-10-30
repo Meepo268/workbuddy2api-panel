@@ -20,7 +20,7 @@ import (
 
 // Config 顶层配置。
 type Config struct {
-	Listen    string `json:"listen"`     // ":7863"
+	Listen    string `json:"listen"`     // "127.0.0.1:7863"（缺省只绑回环）
 	APIKey    string `json:"api_key"`    // 空 = 不鉴权
 	AuthDir   string `json:"auth_dir"`   // ./auths
 	StateFile string `json:"state_file"` // ./data/state.json
@@ -95,9 +95,8 @@ type Config struct {
 		// 的保活只刷新剩余有效期 <= 窗口（或已过期/无 expiry）的凭证；面板手动
 		// 「全部保活」始终全量，不受影响。空 = 默认 "168h"；非法或 <=0 的值 fail fast。
 		KeepaliveRefreshWindow string `json:"keepalive_refresh_window"`
-		BlackcatHours          []int  `json:"blackcat_hours"` // [23] 夜猫子窗口（23:00–08:00 计数）
-		GrowthHours            []int  `json:"growth_hours"`   // [11] 成长任务队列（任务中心待办）自动执行
-		// CheckinEnabled/TravelEnabled/ActivityEnabled/KeepaliveEnabled/BlackcatEnabled/GrowthEnabled 显式禁用开关（缺省 true）。
+		GrowthHours            []int  `json:"growth_hours"` // [11] 成长任务队列（任务中心待办）自动执行
+		// CheckinEnabled/TravelEnabled/ActivityEnabled/KeepaliveEnabled/GrowthEnabled 显式禁用开关（缺省 true）。
 		//
 		// 为什么用独立 bool 而不是空数组/哨兵值表意"禁用"：
 		//   - 空数组与 null 在老语义里已被"未配置 → 回落默认"占用，改判会静默翻转
@@ -110,7 +109,6 @@ type Config struct {
 		TravelEnabled    bool `json:"travel_enabled"`    // 缺省 true；false = 完全停猫猫旅行
 		ActivityEnabled  bool `json:"activity_enabled"`  // 缺省 true；false = 停活跃上报
 		KeepaliveEnabled bool `json:"keepalive_enabled"` // 缺省 true；false = 关 token 保活
-		BlackcatEnabled  bool `json:"blackcat_enabled"`  // 缺省 true；false = 关夜猫子
 		GrowthEnabled    bool `json:"growth_enabled"`    // 缺省 true；false = 关成长任务队列
 
 		// IncludeDisabledInTasks 让「保号类」定时任务（签到 / 活跃上报 / token 保活 /
@@ -133,7 +131,7 @@ type Config struct {
 		// JitterMinutes 0 = 精确整点。正值把触发时刻摊在该窗口内，同一小时偏移固定。
 		JitterMinutes int `json:"jitter_minutes"`
 		// AccountSpreadMinutes 账号级摊开窗口（issue #45）：0 = 关闭（同一秒打全池）。
-		// >0 时排程触发的签到 / 旅行 / 活跃上报 / 保活 / 夜猫子把每个账号放在窗口内
+		// >0 时排程触发的签到 / 旅行 / 活跃上报 / 保活把每个账号放在窗口内
 		// 各自的偏移上（按 账号+任务+日期 哈希，当天固定），面板手动触发不受影响。
 		// 窗口应小于相邻时点的间隔，否则上一批会跨过下一个时点。
 		AccountSpreadMinutes int `json:"account_spread_minutes"`
@@ -159,13 +157,6 @@ type Config struct {
 		// 例：balance_refresh_minutes=5 + 200 → 实际间隔在 3–7 分钟之间抖。
 		BalanceRefreshJitterPermill int `json:"balance_refresh_jitter_permill"` // 缺省 0；0–500
 		TaskSweepJitterPermill      int `json:"task_sweep_jitter_permill"`      // 缺省 0；0–500
-
-		// 夜间参与上限（人味化）：夜猫子（23:00–08:00 真实模型对话）等夜间任务的
-		// 参与账号收窄为积分最高的前 N 个，0 = 不限（旧行为全池参加）。背景：
-		// 深夜全池 12 个号在同一出口 IP 齐做真实对话，是最好认的机器人形状；真人
-		// 不会全部账号都在夜里有活动。夜猫子是唯一「整任务都是真实模型对话」的
-		// 任务，指纹最重，故只收窄它；白天任务（签到/旅行/成长）仍全池保号。
-		NightAccountCap int `json:"night_account_cap"` // 缺省 0（不限）；>0 = Top-N 按积分
 
 		// MakeupCardsPerRound 每轮连登管家最多用几张补签卡，0 = 不限（补到卡用光，
 		// 即 2026-10 之前的行为）。
@@ -202,6 +193,12 @@ type Config struct {
 		// 备选入口 copilot.tencent.com 对海外出口（如 Clash 全局 + TUN）的 TLS 握手
 		// 直接复位，CN 模型目录与对话全部 EOF；需要时用它填这个键回落。
 		ChatBase string `json:"chat_base"`
+		// BillingBase 国内 billing/growth 上游 base 覆盖；空 = 内置默认
+		// https://www.workbuddy.cn（2026-10-28 起对齐 WorkBuddy 5.9.3 客户端：
+		// 客户端把 CN 全部 billing/activity 都打到 workbuddy.cn）。
+		// 旧口径是 www.codebuddy.cn（CodeBuddy CLI 时代，按 CLI 指纹点亮任务用），
+		// 需要退回时填 "https://www.codebuddy.cn"。
+		BillingBase string `json:"billing_base"`
 	} `json:"cn"`
 
 	Upstream struct {
@@ -413,6 +410,13 @@ type Config struct {
 		ClearTicks          int    `json:"clear_ticks"`
 		SendResolve         bool   `json:"send_resolve"`
 	} `json:"alerting"`
+
+	// Watchdog 上游目录改版监控：定期对 /v1/models 结果取指纹，变了经告警 webhook 通知。
+	// 默认关闭——它只在「想第一时间知道上游改了目录」时有价值，开了才有轮询成本。
+	Watchdog struct {
+		Enabled         bool `json:"enabled"`
+		IntervalSeconds int  `json:"interval_seconds"`
+	} `json:"watchdog"`
 	Budget struct {
 		DailyCreditLimit float64 `json:"daily_credit_limit"` // 0 = 不限
 		// BurstCreditLimit 5 分钟窗口内累计 credit 达此值即拒绝（0 = 关闭）。
@@ -447,7 +451,9 @@ type Config struct {
 // Default 默认配置。
 func Default() *Config {
 	c := &Config{
-		Listen:    ":7863",
+		// 默认只绑回环：网关 + 面板 + 空/弱 api_key 同时暴露在公网是这份配置最危险的
+		// 组合。要对外先过反代（nginx/caddy），确需直连再显式改 0.0.0.0:7863。
+		Listen:    "127.0.0.1:7863",
 		APIKey:    "",
 		AuthDir:   "./auths",
 		StateFile: "./data/state.json",
@@ -470,7 +476,6 @@ func Default() *Config {
 	c.Schedule.KeepaliveHours = []int{22}
 	// 周期保活临期窗口默认 7 天：排程保活只刷新一周内到期的凭证，其余账号不动。
 	c.Schedule.KeepaliveRefreshWindow = "168h"
-	c.Schedule.BlackcatHours = []int{23}
 	c.Schedule.GrowthHours = []int{11}
 	// 开关「缺省 true」靠这几行实现：Load 先取 Default() 再 json.Unmarshal 覆盖，
 	// 键缺席（或为 null）时字段原样保留 true，只有显式 false 才关。
@@ -478,7 +483,6 @@ func Default() *Config {
 	c.Schedule.TravelEnabled = true
 	c.Schedule.ActivityEnabled = true
 	c.Schedule.KeepaliveEnabled = true
-	c.Schedule.BlackcatEnabled = true
 	c.Schedule.GrowthEnabled = true
 	c.Schedule.BalanceRefreshEnabled = true
 	c.Schedule.BalanceRefreshMinutes = 5
@@ -528,6 +532,7 @@ func Default() *Config {
 	c.Alerting.RecoverHealthy = 1
 	c.Alerting.ForTicks = 2
 	c.Alerting.ClearTicks = 2
+	c.Watchdog.IntervalSeconds = 3600 // 目录变化是低频事件，一小时一次足够
 	return c
 }
 
@@ -732,11 +737,6 @@ func applyEnv(c *Config) {
 			c.Schedule.TaskSweepJitterPermill = n
 		}
 	}
-	if v := os.Getenv("WB2A_SCHEDULE_NIGHT_ACCOUNT_CAP"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.Schedule.NightAccountCap = n
-		}
-	}
 	if v := os.Getenv("WB2A_ADMIN_ENABLED"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			c.Admin.Enabled = b
@@ -852,6 +852,9 @@ func (c *Config) normalize() error {
 	}
 	if c.Panel.PackageDetailLimit <= 0 {
 		c.Panel.PackageDetailLimit = 5
+	}
+	if c.Watchdog.IntervalSeconds <= 0 {
+		c.Watchdog.IntervalSeconds = 3600
 	}
 	if c.Update.AutoTime == "" {
 		c.Update.AutoTime = "04:00"
@@ -1033,9 +1036,6 @@ func (c *Config) normalize() error {
 	if c.KeepaliveRefreshWindowDur <= 0 {
 		return fmt.Errorf("schedule.keepalive_refresh_window: %q 必须为正时长（如 168h）", c.Schedule.KeepaliveRefreshWindow)
 	}
-	if len(c.Schedule.BlackcatHours) == 0 {
-		c.Schedule.BlackcatHours = []int{23}
-	}
 	if len(c.Schedule.GrowthHours) == 0 {
 		c.Schedule.GrowthHours = []int{11}
 	}
@@ -1106,9 +1106,6 @@ func (c *Config) normalize() error {
 	}
 	if c.Schedule.TaskSweepJitterPermill < 0 || c.Schedule.TaskSweepJitterPermill > 500 {
 		return fmt.Errorf("schedule.task_sweep_jitter_permill: %d 非法（0 = 关闭，上限 500）", c.Schedule.TaskSweepJitterPermill)
-	}
-	if c.Schedule.NightAccountCap < 0 {
-		return fmt.Errorf("schedule.night_account_cap: %d 非法（0 = 不限，>0 = Top-N）", c.Schedule.NightAccountCap)
 	}
 	if c.Schedule.MakeupCardsPerRound < 0 {
 		return fmt.Errorf("schedule.makeup_cards_per_round: %d 非法（0 = 不限，>0 = 每轮上限）", c.Schedule.MakeupCardsPerRound)
@@ -1203,9 +1200,6 @@ func (c *Config) validateScheduleHours() error {
 		return err
 	}
 	if err := checkHourRange("schedule.keepalive_hours", "keepalive_enabled", c.Schedule.KeepaliveHours); err != nil {
-		return err
-	}
-	if err := checkHourRange("schedule.blackcat_hours", "blackcat_enabled", c.Schedule.BlackcatHours); err != nil {
 		return err
 	}
 	return checkHourRange("schedule.growth_hours", "growth_enabled", c.Schedule.GrowthHours)

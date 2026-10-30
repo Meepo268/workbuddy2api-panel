@@ -219,6 +219,10 @@ func (p *Pool) Cooldown(uid string, kind CoolKind, d time.Duration, reason strin
 // 与旧实现的差异：有上游重置时间时绝对不做指数堆加；无重置时间时，「冷却中兜底
 // 探测再 429」不再 softStreak++ 翻倍——这正是用户「全池被推到 2h 封顶」的元凶。
 func (p *Pool) CooldownSoftForModel(uid string, base time.Duration, resetAt time.Time, model, reason string) {
+	if model == "" {
+		p.CooldownSoftRate(uid, base, resetAt, reason)
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
@@ -253,6 +257,9 @@ func (p *Pool) CooldownSoftForModel(uid string, base time.Duration, resetAt time
 			clearRoutingModelCooldownsLocked(e)
 		} else {
 			// 无解析时间：把 **(号, 模型)** 停车，而不是整号冷却。
+			if old, ok := e.modelCooldowns[model]; ok && !old.AuditOnly && old.Until.After(now) {
+				return // 并发失败不能延长正在生效的模型冷却。
+			}
 			//
 			// 为什么必须模型级：6004/14003 的语义都是「这个模型忙/额度紧」，上游文案就是让
 			// 客户端换模型，实测同号换模型立刻可用。按账号冷却是把「一个模型抖动」放大成
@@ -341,12 +348,18 @@ func clearRoutingModelCooldownsLocked(e *entry) {
 }
 
 // modelBlock TTL 常量（11102 负缓存退避）：
-// 首次命中 6h；半开到期后允许放行重试，再次命中 TTL = base × 2^min(hits-1, shift)；
-// 封顶 24h（最多一天再试一次）。该模型请求成功即由 BlockModelClear 清除。
+// 首次命中 2m；半开到期后允许放行重试，再次命中 TTL = base × 2^min(hits-1, shift)；
+// 封顶 10m（最多十分钟再试一次）。该模型请求成功即由 BlockModelClear 清除。
+//
+// 为什么从 6h/24h 缩到 2m/10m（2026-10-27，吸收 ithtelab/workbuddy-manager#312 的
+// 0033 与 issue #308 的复现）：11102 不总是「这号真没这模型」——它也会由路径级、
+// 上游瞬时抖动、分类误判触发。原参数把一次偶发误判放大成 (账号,模型) 锁死 6 小时，
+// 多号轮一圈就是整池该模型 503，而实测同一账号两分钟就能恢复。退避仍然保留：
+// 真没模型的账号反复命中会升到封顶 10 分钟，不会变成每请求重试。
 const (
-	modelBlockBaseTTL = 6 * time.Hour
+	modelBlockBaseTTL = 2 * time.Minute
 	modelBlockShift   = 4
-	modelBlockMaxTTL  = 24 * time.Hour
+	modelBlockMaxTTL  = 10 * time.Minute
 )
 
 // BlockModelBackoff 11102「该后端无此模型」的 (账号, 模型) 负缓存入口
