@@ -596,6 +596,10 @@ func (h *Handler) modelList() []map[string]any {
 			}
 			h.declareReasoning(entry, "cn", mi.ID, efforts)
 		}
+		// models.dev 形状的能力声明（modalities/limit/tool_call/reasoning/
+		// reasoning_options）：纯追加，原有字段一个不动；给只认 models.dev 词表的
+		// 下游（magpie 等）一份读得懂的声明。同源派生见 applyModelsDevShape 注释。
+		applyModelsDevShape(entry, mi, efforts, false)
 		out = append(out, entry)
 	}
 	// global 模型名单：仅 GlobalEnabled=true 时列出（逃生门）。
@@ -652,6 +656,11 @@ func (h *Handler) modelList() []map[string]any {
 				}
 				h.declareReasoning(entry, "global", id, efforts)
 			}
+			// models.dev 形状与 CN 分支同口径；hasInfo=false 时连能力字段都没有，
+			// 不追加（按裸 ID 输出，不编造）。
+			if hasInfo {
+				applyModelsDevShape(entry, info, efforts, false)
+			}
 			out = append(out, entry)
 		}
 	}
@@ -694,7 +703,11 @@ func (h *Handler) generationModelEntries() []map[string]any {
 				"owned_by":         "workbuddy",
 				"image_generation": true,
 			}
-			out = append(out, applyModelInfoFields(entry, mi))
+			entry = applyModelInfoFields(entry, mi)
+			// 出图模型：modalities.output = ["image"]（没有上下文/输出，limit 自然省略）。
+			// 与对话模型同一份函数，保证两处字段形状一致。
+			applyModelsDevShape(entry, mi, nil, true)
+			out = append(out, entry)
 		}
 	}
 	return out
