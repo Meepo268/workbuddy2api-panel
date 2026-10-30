@@ -47,6 +47,8 @@ func TestModelsDevShapeKeepsOriginalFields(t *testing.T) {
 	allowed := map[string]bool{
 		"modalities": true, "limit": true, "tool_call": true,
 		"reasoning": true, "reasoning_options": true,
+		// magpie 私有方言，见 applyModelsDevShape 末尾：故意超出 models.dev 词表
+		"supported_reasoning_levels": true,
 	}
 	for k := range entry {
 		if before[k] == nil && !allowed[k] {
@@ -143,6 +145,55 @@ func TestModelsDevShapeNoFabrication(t *testing.T) {
 	if _, exists := entry["reasoning_options"]; exists {
 		t.Fatalf("无档位不得写 reasoning_options")
 	}
+}
+
+// TestModelsDevShapeMagpieLevels supported_reasoning_levels 是 magpie 的私有方言：
+// 只认 EffortRank 的词（none…ultra），所以「关闭思考」要折成 none 而不是 off；
+// 出图模型与无档位模型整键不写。
+func TestModelsDevShapeMagpieLevels(t *testing.T) {
+	t.Run("档位+关思考", func(t *testing.T) {
+		entry := map[string]any{}
+		mi := upstream.ModelInfo{SupportsReasoning: true}
+		applyModelsDevShape(entry, mi, []string{"low", "high", "max", "off"}, false)
+
+		list, ok := entry["supported_reasoning_levels"].([]map[string]string)
+		if !ok {
+			t.Fatalf("缺 supported_reasoning_levels: %v", entry)
+		}
+		want := []map[string]string{
+			{"effort": "none"}, {"effort": "low"}, {"effort": "high"}, {"effort": "max"},
+		}
+		if !reflect.DeepEqual(list, want) {
+			t.Fatalf("supported_reasoning_levels=%v want %v", list, want)
+		}
+	})
+
+	t.Run("只有开关", func(t *testing.T) {
+		entry := map[string]any{}
+		mi := upstream.ModelInfo{SupportsReasoning: true, CanDisableThinking: true}
+		applyModelsDevShape(entry, mi, nil, false)
+
+		list, ok := entry["supported_reasoning_levels"].([]map[string]string)
+		if !ok || !reflect.DeepEqual(list, []map[string]string{{"effort": "none"}}) {
+			t.Fatalf("应只有 none: %v", entry["supported_reasoning_levels"])
+		}
+	})
+
+	t.Run("无档位不写", func(t *testing.T) {
+		entry := map[string]any{}
+		applyModelsDevShape(entry, upstream.ModelInfo{SupportsToolCall: true}, nil, false)
+		if _, exists := entry["supported_reasoning_levels"]; exists {
+			t.Fatalf("无档位不得写 supported_reasoning_levels: %v", entry["supported_reasoning_levels"])
+		}
+	})
+
+	t.Run("出图模型不写", func(t *testing.T) {
+		entry := map[string]any{"image_generation": true}
+		applyModelsDevShape(entry, upstream.ModelInfo{GenerationKind: "image"}, nil, true)
+		if _, exists := entry["supported_reasoning_levels"]; exists {
+			t.Fatalf("出图模型不得写 supported_reasoning_levels")
+		}
+	})
 }
 
 // TestModelsDevShapeImageModel 出图模型：output 写 image，且不出现 limit。

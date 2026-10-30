@@ -12,8 +12,10 @@ import "github.com/misakano7545/workbuddy2api-panel/internal/upstream"
 // max_output_tokens），images 与 efforts 全是空/默认。
 //
 // 三条硬规则（改这个函数时别破坏）：
-//  1. 纯追加：只写 models.dev 独有键，绝不覆盖 id/name/object/created/owned_by 与
-//     原有能力旗标。原有输出逐字节不变是这次改动的验收前提。
+//  1. 纯追加：只写 models.dev 独有键（唯一的例外是函数末尾的
+//     supported_reasoning_levels，它是 magpie 的私有方言，见那里的说明），绝不覆盖
+//     id/name/object/created/owned_by 与原有能力旗标。原有输出逐字节不变是这次
+//     改动的验收前提。
 //  2. 同源派生：limit.context / limit.output 直接读调用方已经算好的 entry 值，
 //     本函数**不重算**上下文与输出上限——两处各算一次必然漂移。efforts 同理，
 //     由调用方（upstream.EffortListing 的策略结果）传进来。
@@ -80,5 +82,27 @@ func applyModelsDevShape(entry map[string]any, mi upstream.ModelInfo, efforts []
 	}
 	if len(opts) > 0 {
 		entry["reasoning_options"] = opts
+	}
+
+	// —— supported_reasoning_levels：magpie↔magpie 的私有方言 ——
+	// 这是本函数唯一不属于 models.dev 词表的键，加它的理由有实测支撑：magpie
+	// 解析任意厂商 /v1/models 时只认这个键（internal/catalog/live.go:704 的
+	// liveModel.Levels，levelsOf 接受 [{"effort":"high"}] 也接受 ["high"]），
+	// 上面那份 models.dev 形状的 reasoning_options 它不读——同一份响应里
+	// Context/Output 能取到、档位却显示 unknown，就差这一个键名。
+	//
+	// 值必须是它 EffortRank 认识的词（none/minimal/low/medium/high/xhigh/max/
+	// ultra）；「关闭思考」在那边叫 none，所以 disable 折成 none 而不是 off
+	// （NearestEffort 只在明确要求时才会选到 none，不会平白降档）。
+	// 出图模型（efforts 为 nil、无 toggle）整键不写；没有档位也没有开关的模型同样不写。
+	if len(levels) > 0 || disable {
+		list := make([]map[string]string, 0, len(levels)+1)
+		if disable {
+			list = append(list, map[string]string{"effort": "none"})
+		}
+		for _, l := range levels {
+			list = append(list, map[string]string{"effort": l})
+		}
+		entry["supported_reasoning_levels"] = list
 	}
 }
